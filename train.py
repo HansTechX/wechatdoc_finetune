@@ -531,7 +531,7 @@ def main():
         logger.info("  [v] 训练完成")
 
         # 5. 合并 LoRA 权重
-        if not args.skip_merge and cfg["training"].get("finetuning_type") == "lora":
+        if not args.skip_merge and cfg["training"].get("finetuning_type") in ("lora", "qlora"):
             best_ckpt = find_best_checkpoint(output_dir, logger)
             merged_path = os.path.join(output_dir, "merged_model")
             merge_lora_weights(cfg, best_ckpt, merged_path, logger)

@@ -13,8 +13,8 @@
 │   └── train_config.yaml       # 训练配置文件
 ├── data/                       # 数据集目录（脚本自动生成）
 │   ├── dataset_info.json       # 数据集注册表
-│   ├── intent_cls.jsonl        # 训练集
-│   └── intent_cls_val.jsonl    # 验证集
+│   ├── intent_cls.jsonl        # 训练集（LLaMA Factory 自动切分 80/20 用于训练和验证）
+│   └── intent_cls_val.jsonl    # 测试集（训练后评估用，不参与训练）
 └── outputs/                    # 所有运行记录（运行后自动创建）
     ├── prepare_data.log        # 数据准备日志（所有运行追加）
     └── run_20240101_120000/    # 训练运行目录
@@ -38,7 +38,7 @@
 ```bash
 pip install llamafactory
 pip install openpyxl
-pip install flash-attn --no-build-isolation
+pip install flash-attn --no-build-isolation  # 可选，仅 fa2 模式需要（默认 sdpa 无需安装）
 pip install tensorboard
 ```
 
@@ -55,7 +55,7 @@ pip install tensorboard
 | 提示词 | System 提示词模板（是否训练=是 的行生效） |
 | 业务编码映射 | 意图名称与编码的映射关系 |
 | 训练集 | 客户问题 + 人工标注结果 |
-| 验证集 | 客户问题 + 人工标注结果 |
+| 验证集 | 客户问题 + 人工标注结果（训练后评估用，不参与训练） |
 
 #### 2.2 运行数据准备脚本
 
@@ -83,9 +83,19 @@ python prepare_data.py --dataset_name intent_cls
 **脚本会自动：**
 - 从"提示词"sheet 提取系统提示词
 - 从"业务编码映射"sheet 构建意图编码映射（以提示词为准）
-- 将训练集、验证集转换为 Alpaca JSONL 格式
-- 注册数据集到 `data/dataset_info.json`
+- 将"训练集"sheet 转换为 `intent_cls.jsonl`（训练数据，LLaMA Factory 自动 80/20 切分）
+- 将"验证集"sheet 转换为 `intent_cls_val.jsonl`（训练后评估用，不参与训练）
+- 注册训练数据集到 `data/dataset_info.json`
 - 更新 `config/train_config.yaml` 中的 `dataset_name`
+
+**数据流说明：**
+```
+Excel "训练集" → intent_cls.jsonl ─→ LLaMA Factory (val_size=0.2 自动切分)
+                                      ├── 80% 实际训练
+                                      └── 20% 训练中验证（eval_steps 评估）
+
+Excel "验证集" → intent_cls_val.jsonl → inference_test.py 训练后评估
+```
 
 **输出示例：**
 ```
@@ -96,7 +106,7 @@ python prepare_data.py --dataset_name intent_cls
     ...
     合计: 5731 条
 
-  [验证集]
+  [测试集（训练后评估用）]
     [保单贷款-928] : 216 条
     ...
     合计: 3776 条
@@ -139,6 +149,7 @@ training:
   num_epochs: 3
   per_device_train_batch_size: 2
   learning_rate: 1.0e-4
+  val_size: 0.2                          # ← 训练数据中 20% 用于验证集
 
 lora:
   rank: 8
@@ -287,8 +298,10 @@ quantization:
 
 **Q: 如何断点续训？**
 ```yaml
+# 将模型路径指向具体的 checkpoint 子目录
 model:
-  name_or_path: "outputs/run_xxx/checkpoint-500"
+  name_or_path: "outputs/run_20240101_120000/checkpoint-500"
+# 或者使用 LLaMA Factory 的 resume_from_checkpoint 参数
 ```
 
 **Q: LoRA vs QLoRA 怎么选？**

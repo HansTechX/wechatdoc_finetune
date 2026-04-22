@@ -174,7 +174,6 @@ def update_dataset_info(dataset_name: str, train_file: str, val_file: str, datas
             "prompt": "instruction",
             "query": "input",
             "response": "output",
-            "system": "instruction",
         },
     }
     if val_file:

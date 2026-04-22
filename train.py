@@ -100,12 +100,12 @@ def check_environment(logger: logging.Logger) -> dict:
         env_info["llamafactory"] = None
 
     # 磁盘空间
-    disk = shutil.disk_usage("/")
+    disk = shutil.disk_usage(os.path.dirname(os.path.abspath(__file__)))
     free_gb = disk.free / 1e9
     env_info["disk_free_gb"] = round(free_gb, 1)
     logger.info(f"  磁盘剩余: {free_gb:.1f} GB")
     if free_gb < 50:
-        logger.warning(f"  ⚠ 磁盘剩余不足 50GB，建议清理后再训练")
+        logger.warning("  [!] 磁盘剩余不足 50GB，建议清理后再训练")
 
     logger.info("=" * 60)
     return env_info
@@ -161,12 +161,12 @@ def validate_dataset(data_path: str, logger: logging.Logger) -> dict:
     logger.info(f"  格式异常: {stats['invalid']}")
     if stats["errors"]:
         for err in stats["errors"][:5]:
-            logger.warning(f"  ⚠ {err}")
+            logger.warning(f"  [!] {err}")
 
     if stats["invalid"] / max(stats["total"], 1) > 0.05:
         raise ValueError(f"数据集异常比例 > 5%，请检查数据质量！")
 
-    logger.info("  ✓ 数据集验证通过")
+    logger.info("  [v] 数据集验证通过")
     return stats
 
 
@@ -234,9 +234,6 @@ def generate_llamafactory_config(cfg: dict, run_name: str, output_dir: str) -> s
 
         # Flash Attention
         "flash_attn": cfg["training"].get("flash_attention", "fa2"),
-
-        # DeepSpeed / FSDP（多卡）
-        "deepspeed": cfg["distributed"].get("deepspeed_config", None) if cfg.get("distributed") else None,
     }
 
     # 清理 None 值
@@ -253,28 +250,12 @@ def generate_llamafactory_config(cfg: dict, run_name: str, output_dir: str) -> s
 # ─── 执行训练 ────────────────────────────────────────────────
 def run_training(
     lf_config_path: str,
-    cfg: dict,
     logger: logging.Logger
 ) -> subprocess.CompletedProcess:
     logger.info("【启动训练】")
 
-    num_gpus = cfg.get("distributed", {}).get("num_gpus", 1)
-    use_deepspeed = cfg.get("distributed", {}).get("deepspeed_config") is not None
-
-    if num_gpus > 1:
-        # 多卡训练
-        cmd = [
-            "torchrun",
-            f"--nproc_per_node={num_gpus}",
-            "--master_port=29500",
-            "-m", "llamafactory.train.tuner",
-            lf_config_path
-        ]
-        logger.info(f"  多卡训练 ({num_gpus} GPUs): {' '.join(cmd)}")
-    else:
-        # 单卡训练
-        cmd = ["llamafactory-cli", "train", lf_config_path]
-        logger.info(f"  单卡训练: {' '.join(cmd)}")
+    cmd = ["llamafactory-cli", "train", lf_config_path]
+    logger.info(f"  训练命令: {' '.join(cmd)}")
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -325,7 +306,7 @@ def merge_lora_weights(cfg: dict, adapter_path: str, output_path: str, logger: l
         logger.error(f"  合并失败:\n{result.stderr}")
         raise RuntimeError("LoRA 权重合并失败")
 
-    logger.info(f"  ✓ 合并完成，保存至: {output_path}")
+    logger.info(f"  [v] 合并完成，保存至: {output_path}")
 
 
 # ─── 评估 ────────────────────────────────────────────────────
@@ -367,11 +348,11 @@ def run_evaluation(cfg: dict, model_path: str, logger: logging.Logger) -> dict:
             if os.path.exists(results_file):
                 with open(results_file) as f:
                     results[task] = json.load(f)
-                logger.info(f"  ✓ {task}: {results[task]}")
+                logger.info(f"  [v] {task}: {results[task]}")
             else:
-                logger.warning(f"  ⚠ {task} 结果文件不存在")
+                logger.warning(f"  [!] {task} 结果文件不存在")
         else:
-            logger.warning(f"  ⚠ {task} 评估失败: {result.stderr[:200]}")
+            logger.warning(f"  [!] {task} 评估失败: {result.stderr[:200]}")
 
     return results
 
@@ -417,7 +398,7 @@ def save_run_report(
         f.write(f"{'='*60}\n")
         f.write(f"训练运行摘要: {run_name}\n")
         f.write(f"{'='*60}\n")
-        f.write(f"状态:     {'✓ 成功' if success else '✗ 失败'}\n")
+        f.write(f"状态:     {'[v] 成功' if success else '[x] 失败'}\n")
         f.write(f"时间:     {report['timestamp']}\n")
         f.write(f"耗时:     {report['duration']}\n")
         f.write(f"模型:     {cfg['model']['name_or_path']}\n")
@@ -434,8 +415,8 @@ def save_run_report(
         f.write(f"\n输出目录: {output_dir}\n")
         f.write(f"{'='*60}\n")
 
-    logger.info(f"  ✓ 报告已保存: {report_path}")
-    logger.info(f"  ✓ 摘要已保存: {summary_path}")
+    logger.info(f"  [v] 报告已保存: {report_path}")
+    logger.info(f"  [v] 摘要已保存: {summary_path}")
 
 
 # ─── 主流程 ────────────────────────────────────────────────
@@ -466,7 +447,7 @@ def main():
 
     # 日志
     logger = setup_logger(log_dir, run_name)
-    logger.info(f"🚀 开始训练任务: {run_name}")
+    logger.info(f"[>] 开始训练任务: {run_name}")
     logger.info(f"   配置文件: {args.config}")
     logger.info(f"   输出目录: {output_dir}")
 
@@ -477,6 +458,7 @@ def main():
     success = False
     data_stats = {}
     eval_results = {}
+    env_info = {}
 
     try:
         # 1. 环境检查
@@ -485,7 +467,7 @@ def main():
         # 2. 数据验证
         data_path = os.path.join(
             cfg["data"].get("dataset_dir", "data"),
-            cfg["data"]["dataset_name"] + ".json"
+            cfg["data"]["dataset_name"] + ".jsonl"
         )
         if os.path.exists(data_path):
             data_stats = validate_dataset(data_path, logger)
@@ -499,13 +481,13 @@ def main():
 
         # 3. 生成训练配置
         lf_config_path = generate_llamafactory_config(cfg, run_name, output_dir)
-        logger.info(f"  ✓ LLaMA Factory 配置已生成: {lf_config_path}")
+        logger.info(f"  [v] LLaMA Factory 配置已生成: {lf_config_path}")
 
         # 4. 执行训练
-        process = run_training(lf_config_path, cfg, logger)
+        process = run_training(lf_config_path, logger)
         if process.returncode != 0:
             raise RuntimeError(f"训练进程退出码: {process.returncode}")
-        logger.info("  ✓ 训练完成")
+        logger.info("  [v] 训练完成")
 
         # 5. 合并 LoRA 权重
         if not args.skip_merge and cfg["training"].get("finetuning_type") == "lora":
@@ -521,18 +503,18 @@ def main():
 
         success = True
         logger.info(f"\n{'='*60}")
-        logger.info(f"✅  训练任务 [{run_name}] 完成！")
+        logger.info(f"[v] 训练任务 [{run_name}] 完成！")
         logger.info(f"{'='*60}")
 
     except Exception as e:
         logger.error(f"\n{'='*60}")
-        logger.error(f"❌  训练任务失败: {e}", exc_info=True)
+        logger.error(f"[x] 训练任务失败: {e}", exc_info=True)
         logger.error(f"{'='*60}")
 
     finally:
         # 7. 保存报告
         save_run_report(
-            run_name, cfg, env_info if 'env_info' in dir() else {},
+            run_name, cfg, env_info,
             data_stats, eval_results, output_dir,
             start_time, success, logger
         )

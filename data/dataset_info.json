@@ -1,0 +1,12 @@
+{
+  "intent_cls": {
+    "file_name": "intent_cls.jsonl",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "instruction"
+    },
+    "val_file": "intent_cls_val.jsonl"
+  }
+}

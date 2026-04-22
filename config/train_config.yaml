@@ -1,0 +1,80 @@
+# =============================================================
+#  大厂标准 LLaMA Factory 微调配置文件
+#  使用前请根据实际情况修改各字段
+# =============================================================
+
+# ─── 模型配置 ─────────────────────────────────────────────────
+model:
+  name_or_path: "meta-llama/Meta-Llama-3.1-8B-Instruct"   # 本地路径 或 HuggingFace Hub ID
+  trust_remote_code: true
+
+# ─── 数据配置 ─────────────────────────────────────────────────
+data:
+  dataset_name: "intent_cls"          # 对应 data/dataset_info.json 中的 key
+  dataset_dir: "data"                 # dataset_info.json 所在目录
+  template: "llama3"                  # 对话模板: llama3 | qwen | mistral | chatglm3 | alpaca
+  max_seq_length: 2048                # 最大序列长度
+  max_samples: null                   # 限制样本数，null=不限制（调试时可设为 1000）
+  num_workers: 4                      # 数据预处理线程数
+
+# ─── 训练配置 ─────────────────────────────────────────────────
+training:
+  stage: "sft"                        # sft | pt（预训练） | rm（奖励模型） | ppo | dpo
+  finetuning_type: "lora"             # lora | qlora | full | freeze
+
+  # 超参数
+  num_epochs: 3
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4     # 等效 batch_size = 2 * 4 * GPU数
+  learning_rate: 1.0e-4
+  lr_scheduler: "cosine"             # linear | cosine | constant
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  # 精度
+  bf16: true                         # 推荐 A100/H100 使用 bf16
+  fp16: false                        # 推荐 V100 使用 fp16
+
+  # Flash Attention（强烈推荐开启）
+  flash_attention: "fa2"             # fa2 | sdpa | null
+
+  # 保存策略
+  save_strategy: "steps"             # steps | epoch
+  save_steps: 100
+  save_total_limit: 3                # 最多保留 3 个 checkpoint
+
+  # 验证策略
+  val_size: 0.01                     # 1% 数据作为验证集
+  eval_strategy: "steps"
+  eval_steps: 100
+
+  # 日志
+  logging_steps: 10
+
+# ─── LoRA 配置（仅 lora/qlora 生效）────────────────────────
+lora:
+  rank: 8                            # LoRA rank，越大拟合越强，4/8/16/32 常用
+  alpha: 16                          # LoRA alpha = 2 * rank 是常见经验值
+  dropout: 0.05
+  target_modules: "all"              # all = 所有线性层; 或指定 "q_proj,v_proj"
+
+# ─── 量化配置（仅 qlora 生效）───────────────────────────────
+quantization:
+  enable: false                      # QLoRA 时设为 true
+  bits: 4                            # 4 | 8
+
+# ─── 评估配置 ────────────────────────────────────────────────
+evaluation:
+  tasks: []                          # 留空跳过，可填: ["cmmlu", "ceval", "mmlu"]
+  lang: "zh"                         # zh | en
+  n_shot: 5
+  batch_size: 4
+
+# ─── 日志配置 ────────────────────────────────────────────────
+logging:
+  report_to: "tensorboard"           # tensorboard | wandb | none
+
+# ─── 输出配置 ────────────────────────────────────────────────
+output:
+  base_dir: "outputs"                # 所有运行结果统一存放在这里

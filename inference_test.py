@@ -287,7 +287,7 @@ def main():
         json.dump(output_data, f, ensure_ascii=False, indent=2)
     print(f"\n结果已保存: {output_path}")
 
-    sys.stdout = _log_file.console
+    sys.stdout = sys.stdout.console
     _log_file.close()
 
 

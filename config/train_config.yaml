@@ -36,8 +36,14 @@ training:
   bf16: true                         # 推荐 A100/H100 使用 bf16
   fp16: false                        # 推荐 V100 使用 fp16
 
-  # Flash Attention（强烈推荐开启）
-  flash_attention: "fa2"             # fa2 | sdpa | null
+  # Flash Attention
+  flash_attention: "sdpa"              # fa2 | sdpa (sdpa 兼容性更好，fa2 需 Ampere+ GPU)
+
+  # 可复现性
+  seed: 42
+
+  # 显存优化（显存不足时开启）
+  gradient_checkpointing: true
 
   # 保存策略
   save_strategy: "steps"             # steps | epoch
@@ -45,7 +51,7 @@ training:
   save_total_limit: 3                # 最多保留 3 个 checkpoint
 
   # 验证策略
-  val_size: 0.01                     # 1% 数据作为验证集
+  val_size: 0.2                      # 20% 训练数据切分为验证集
   eval_strategy: "steps"
   eval_steps: 100
 

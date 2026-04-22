@@ -160,8 +160,8 @@ def print_distribution(title: str, code_dist: dict, code_to_name: dict, unmapped
             print(f"      - '{label}': {count} 条")
 
 
-def update_dataset_info(dataset_name: str, train_file: str, val_file: str, dataset_dir: str):
-    """注册数据集到 dataset_info.json"""
+def update_dataset_info(dataset_name: str, train_file: str, dataset_dir: str):
+    """注册数据集到 dataset_info.json（仅训练集，验证集不参与训练）"""
     info_path = os.path.join(dataset_dir, "dataset_info.json")
     if os.path.exists(info_path):
         with open(info_path, "r", encoding="utf-8") as f:
@@ -176,8 +176,6 @@ def update_dataset_info(dataset_name: str, train_file: str, val_file: str, datas
             "response": "output",
         },
     }
-    if val_file:
-        info[dataset_name]["val_file"] = val_file
     with open(info_path, "w", encoding="utf-8") as f:
         json.dump(info, f, ensure_ascii=False, indent=2)
     print(f"  已注册到 {os.path.join(dataset_dir, 'dataset_info.json')}")
@@ -255,24 +253,24 @@ def main():
     print_distribution("训练集", train_dist, code_to_name, train_unmapped, train_skip)
     print(f"  已保存: {train_path}")
 
-    # 验证集
+    # 验证集（训练完成后用于推理测试，不参与训练）
     val_data, val_skip, val_unmapped, val_dist = convert_to_jsonl(
         sheets.get("验证集", []), system_prompt, code_map, lower_map
     )
     val_file = f"{args.dataset_name}_val.jsonl"
     val_path = os.path.join(args.output_dir, val_file)
     save_jsonl(val_data, val_path)
-    print_distribution("验证集", val_dist, code_to_name, val_unmapped, val_skip)
+    print_distribution("测试集（训练后评估用）", val_dist, code_to_name, val_unmapped, val_skip)
     print(f"  已保存: {val_path}")
 
     # 注册 & 更新配置
     print()
-    update_dataset_info(args.dataset_name, train_file, val_file, args.output_dir)
+    update_dataset_info(args.dataset_name, train_file, args.output_dir)
     update_train_config(args.dataset_name)
 
     print("\n数据准备完成。")
 
-    sys.stdout = _log_file.console
+    sys.stdout = sys.stdout.console
     _log_file.close()
 
 

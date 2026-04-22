@@ -219,8 +219,8 @@ def generate_llamafactory_config(cfg: dict, run_name: str, output_dir: str) -> s
         "fp16": cfg["training"].get("fp16", False),
 
         # 评估
-        "val_size": cfg["training"].get("val_size", 0.01),
-        "evaluation_strategy": cfg["training"].get("eval_strategy", "steps"),
+        "val_size": cfg["training"].get("val_size", 0.2),
+        "eval_strategy": cfg["training"].get("eval_strategy", "steps"),
         "eval_steps": cfg["training"].get("eval_steps", 100),
         "load_best_model_at_end": True,
 
@@ -232,9 +232,19 @@ def generate_llamafactory_config(cfg: dict, run_name: str, output_dir: str) -> s
         "report_to": cfg["logging"].get("report_to", "tensorboard"),
         "run_name": run_name,
 
-        # Flash Attention
-        "flash_attn": cfg["training"].get("flash_attention", "fa2"),
+        # Flash Attention（不支持 fa2 的 GPU 自动回退为 sdpa）
+        "flash_attn": cfg["training"].get("flash_attention", "sdpa"),
     }
+
+    ft_type = cfg["training"].get("finetuning_type", "lora")
+    if ft_type in ("lora", "qlora"):
+        lf_config["save_only_model"] = True
+
+    if cfg["training"].get("seed") is not None:
+        lf_config["seed"] = cfg["training"]["seed"]
+
+    if cfg["training"].get("gradient_checkpointing", False):
+        lf_config["gradient_checkpointing"] = True
 
     # 清理 None 值
     lf_config = {k: v for k, v in lf_config.items() if v is not None}
@@ -277,6 +287,37 @@ def run_training(
 
     process.wait()
     return process
+
+
+# ─── 查找最佳 Checkpoint ──────────────────────────────────────
+def find_best_checkpoint(output_dir: str, logger: logging.Logger) -> str:
+    """在 output_dir 下查找 trainer_state.json 中记录的最佳 checkpoint"""
+    state_path = os.path.join(output_dir, "trainer_state.json")
+    if os.path.exists(state_path):
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        best = state.get("best_model_checkpoint")
+        if best and os.path.isdir(best):
+            logger.info(f"  最佳 checkpoint: {best}")
+            return best
+
+    # 回退：选择编号最大的 checkpoint 目录
+    checkpoints = []
+    for name in os.listdir(output_dir):
+        full = os.path.join(output_dir, name)
+        if os.path.isdir(full) and name.startswith("checkpoint-"):
+            try:
+                step = int(name.split("-")[1])
+                checkpoints.append((step, full))
+            except (ValueError, IndexError):
+                pass
+    if checkpoints:
+        checkpoints.sort(key=lambda x: x[0], reverse=True)
+        best = checkpoints[0][1]
+        logger.info(f"  使用最新 checkpoint: {best}")
+        return best
+
+    raise FileNotFoundError(f"未找到 checkpoint 目录: {output_dir}")
 
 
 # ─── 模型合并（LoRA → 完整模型）────────────────────────────
@@ -491,8 +532,9 @@ def main():
 
         # 5. 合并 LoRA 权重
         if not args.skip_merge and cfg["training"].get("finetuning_type") == "lora":
+            best_ckpt = find_best_checkpoint(output_dir, logger)
             merged_path = os.path.join(output_dir, "merged_model")
-            merge_lora_weights(cfg, output_dir, merged_path, logger)
+            merge_lora_weights(cfg, best_ckpt, merged_path, logger)
             eval_model_path = merged_path
         else:
             eval_model_path = output_dir

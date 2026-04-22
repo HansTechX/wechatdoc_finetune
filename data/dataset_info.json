@@ -5,7 +5,6 @@
       "prompt": "instruction",
       "query": "input",
       "response": "output"
-    },
-    "val_file": "intent_cls_val.jsonl"
+    }
   }
 }

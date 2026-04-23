@@ -5,14 +5,14 @@
 
 # ─── 模型配置 ─────────────────────────────────────────────────
 model:
-  name_or_path: "meta-llama/Meta-Llama-3.1-8B-Instruct"   # 本地路径 或 HuggingFace Hub ID
+  name_or_path: "Qwen/Qwen3-8B"   # Qwen3 已包含指令微调，非思考模式用于高效任务
   trust_remote_code: true
 
 # ─── 数据配置 ─────────────────────────────────────────────────
 data:
   dataset_name: "intent_cls"          # 对应 data/dataset_info.json 中的 key
   dataset_dir: "data"                 # dataset_info.json 所在目录
-  template: "llama3"                  # 对话模板: llama3 | qwen | mistral | chatglm3 | alpaca
+  template: "qwen3_nothink"           # 非思考模式，适合意图分类等简单任务（qwen3_nothink | qwen3 | qwen | llama3）
   max_seq_length: 2048                # 最大序列长度
   max_samples: null                   # 限制样本数，null=不限制（调试时可设为 1000）
   num_workers: 4                      # 数据预处理线程数

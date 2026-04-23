@@ -99,8 +99,8 @@ def check_environment(logger: logging.Logger) -> dict:
         logger.warning("  LLaMA Factory 未安装，请执行: pip install llamafactory")
         env_info["llamafactory"] = None
 
-    # 磁盘空间
-    disk = shutil.disk_usage(os.path.dirname(os.path.abspath(__file__)))
+    # 磁盘空间（检查当前工作目录，而非脚本目录）
+    disk = shutil.disk_usage(os.getcwd())
     free_gb = disk.free / 1e9
     env_info["disk_free_gb"] = round(free_gb, 1)
     logger.info(f"  磁盘剩余: {free_gb:.1f} GB")

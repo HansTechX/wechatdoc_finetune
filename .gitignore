@@ -1,6 +1,7 @@
-# 原始数据文件
-*.xlsx
-~$*.xlsx
+# 原始数据文件（保留 xlsx 文件在版本控制中）
+
+# 打包文件
+*.tar.gz
 
 # 生成的训练数据（通过 prepare_data.py 重新生成）
 data/intent_cls.jsonl

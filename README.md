@@ -55,7 +55,7 @@ pip install tensorboard
 | 提示词 | System 提示词模板（是否训练=是 的行生效） |
 | 业务编码映射 | 意图名称与编码的映射关系 |
 | 训练集 | 客户问题 + 人工标注结果 |
-| 验证集 | 客户问题 + 人工标注结果（训练后评估用，不参与训练） |
+| 测试集 | 客户问题 + 人工标注结果（训练后评估用，不参与训练） |
 
 #### 2.2 运行数据准备脚本
 
@@ -84,7 +84,7 @@ python prepare_data.py --dataset_name intent_cls
 - 从"提示词"sheet 提取系统提示词
 - 从"业务编码映射"sheet 构建意图编码映射（以提示词为准）
 - 将"训练集"sheet 转换为 `intent_cls.jsonl`（训练数据，LLaMA Factory 自动 80/20 切分）
-- 将"验证集"sheet 转换为 `intent_cls_val.jsonl`（训练后评估用，不参与训练）
+- 将"测试集"sheet 转换为 `intent_cls_val.jsonl`（训练后评估用，不参与训练）
 - 注册训练数据集到 `data/dataset_info.json`
 - 更新 `config/train_config.yaml` 中的 `dataset_name`
 
@@ -94,7 +94,7 @@ Excel "训练集" → intent_cls.jsonl ─→ LLaMA Factory (val_size=0.2 自动
                                       ├── 80% 实际训练
                                       └── 20% 训练中验证（eval_steps 评估）
 
-Excel "验证集" → intent_cls_val.jsonl → inference_test.py 训练后评估
+Excel "测试集" → intent_cls_val.jsonl → inference_test.py 训练后评估
 ```
 
 **输出示例：**
@@ -275,6 +275,102 @@ python inference_test.py --output outputs/run_xxx/inference_results.json
 Epochs:  3
 LR:      0.0001
 ============================================================
+```
+
+---
+
+### 第八步：服务器部署
+
+#### 8.1 打包项目
+
+使用项目提供的打包脚本，自动遵循 `.gitignore` 规则（排除训练输出、数据文件等）：
+
+```bash
+# 方式一：使用打包脚本（推荐）
+./package.sh
+```
+
+**脚本功能：**
+- 自动检测 git 仓库状态
+- 提示未提交更改（可选择继续或取消）
+- 生成带时间戳的压缩包：`wechatdoc_finetune_YYYYMMDD_HHMMSS.tar.gz`
+- 显示上传命令示例
+
+**自动排除内容：**
+- `*.xlsx` - 原始 Excel 数据文件
+- `data/*.jsonl` - 生成的训练数据
+- `data/dataset_info.json` - 数据集注册表
+- `outputs/` - 训练输出目录
+- `__pycache__/` - Python 缓存
+
+#### 8.2 上传到服务器
+
+```bash
+# 上传压缩包
+scp wechatdoc_finetune_YYYYMMDD_HHMMSS.tar.gz user@server:/path/to/destination/
+
+# 单独上传 Excel 数据文件（必须）
+scp 蒸馏模型-数据汇总-YYMMDD.xlsx user@server:/path/to/project/
+```
+
+#### 8.3 服务器端部署
+
+```bash
+# 1. 解压项目
+tar -xzf wechatdoc_finetune_YYYYMMDD_HHMMSS.tar.gz
+cd wechatdoc_finetune
+
+# 2. 创建虚拟环境（推荐）
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# source venv/Scripts/activate  # Windows
+
+# 3. 安装依赖
+pip install llamafactory
+pip install openpyxl
+pip install flash-attn --no-build-isolation  # 可选，仅 fa2 模式需要
+pip install tensorboard
+
+# 4. 生成训练数据
+python prepare_data.py --input 蒸馏模型-数据汇总-YYMMDD.xlsx
+
+# 5. 修改配置文件（如需要）
+vi config/train_config.yaml
+# 主要修改模型路径: model.name_or_path
+
+# 6. 启动训练
+python train.py --config config/train_config.yaml
+
+# 7. 监控训练（另开终端）
+tail -f outputs/run_xxx/logs/run_xxx.log
+```
+
+#### 8.4 快捷命令（可选）
+
+在本地创建 `deploy.sh` 脚本：
+
+```bash
+#!/bin/bash
+# 一键部署到服务器
+SERVER="user@your-server"
+REMOTE_DIR="/path/to/project"
+
+# 打包
+./package.sh
+PACKAGE=$(ls -t wechatdoc_finetune_*.tar.gz | head -1)
+
+# 上传
+scp "$PACKAGE" "$SERVER:$REMOTE_DIR/"
+scp *.xlsx "$SERVER:$REMOTE_DIR/"
+
+# 服务器端解压并准备数据
+ssh "$SERVER" << 'EOF'
+  cd "$REMOTE_DIR"
+  tar -xzf wechatdoc_finetune_*.tar.gz --strip-components=1
+  python prepare_data.py
+EOF
+
+echo "部署完成！"
 ```
 
 ---

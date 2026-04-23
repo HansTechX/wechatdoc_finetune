@@ -253,9 +253,9 @@ def main():
     print_distribution("训练集", train_dist, code_to_name, train_unmapped, train_skip)
     print(f"  已保存: {train_path}")
 
-    # 验证集（训练完成后用于推理测试，不参与训练）
+    # 测试集（训练完成后用于推理测试，不参与训练）
     val_data, val_skip, val_unmapped, val_dist = convert_to_jsonl(
-        sheets.get("验证集", []), system_prompt, code_map, lower_map
+        sheets.get("测试集", []), system_prompt, code_map, lower_map
     )
     val_file = f"{args.dataset_name}_val.jsonl"
     val_path = os.path.join(args.output_dir, val_file)

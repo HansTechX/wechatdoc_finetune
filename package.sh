@@ -43,15 +43,6 @@ if [ $? -eq 0 ]; then
     SIZE=$(ls -lh "$PACKAGE_NAME" | awk '{print $5}')
     echo ""
     echo "✓ 打包成功: $PACKAGE_NAME ($SIZE)"
-    echo ""
-    echo "上传到服务器示例:"
-    echo "  scp $PACKAGE_NAME user@server:/path/to/destination/"
-    echo ""
-    echo "服务器端解压:"
-    echo "  tar -xzf $PACKAGE_NAME"
-    echo ""
-    echo "注意: 需要单独上传 Excel 数据文件"
-    echo "  scp *.xlsx user@server:/path/to/project/"
 else
     echo "✗ 打包失败"
     exit 1

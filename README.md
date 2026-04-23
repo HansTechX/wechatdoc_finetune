@@ -345,34 +345,6 @@ python train.py --config config/train_config.yaml
 tail -f outputs/run_xxx/logs/run_xxx.log
 ```
 
-#### 8.4 快捷命令（可选）
-
-在本地创建 `deploy.sh` 脚本：
-
-```bash
-#!/bin/bash
-# 一键部署到服务器
-SERVER="user@your-server"
-REMOTE_DIR="/path/to/project"
-
-# 打包
-./package.sh
-PACKAGE=$(ls -t wechatdoc_finetune_*.tar.gz | head -1)
-
-# 上传
-scp "$PACKAGE" "$SERVER:$REMOTE_DIR/"
-scp *.xlsx "$SERVER:$REMOTE_DIR/"
-
-# 服务器端解压并准备数据
-ssh "$SERVER" << 'EOF'
-  cd "$REMOTE_DIR"
-  tar -xzf wechatdoc_finetune_*.tar.gz --strip-components=1
-  python prepare_data.py
-EOF
-
-echo "部署完成！"
-```
-
 ---
 
 ## 🔧 常见问题

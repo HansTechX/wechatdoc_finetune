@@ -558,11 +558,14 @@ model:
 ├── train_webui.py              # WebUI 可视化训练
 ├── run_pipeline.py             # 一键流水线
 ├── run_pipeline_batch.py       # 批量训练
-├── check_dsw_env.sh            # DSW 环境查询脚本 (Bash)
-├── check_dsw_env.py            # DSW 环境查询脚本 (Python)
 ├── config/
 │   ├── train_config.yaml       # 训练配置
 │   └── serve_config.yaml       # 部署配置
+├── tools/                      # 辅助工具脚本
+│   ├── check_dsw_env.sh        # DSW 环境查询 (Bash)
+│   ├── check_dsw_env.py        # DSW 环境查询 (Python)
+│   ├── package.sh              # 部署打包脚本
+│   └── sync-to-both.sh         # Git 双仓库同步配置
 ├── data/                       # 数据集目录
 │   ├── dataset_info.json
 │   ├── mainintent_train.jsonl
@@ -590,7 +593,7 @@ model:
 
 ```bash
 # 方式一：使用 Git 克隆
-git clone git@gitee.com:hanslzh/wechatdoc_finetune.git
+git clone <你的仓库地址>
 
 # 方式二：上传压缩包后解压
 unzip wechatdoc_finetune.zip

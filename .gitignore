@@ -24,3 +24,7 @@ CLAUDE.md
 
 # Office 临时文件
 ~$*
+
+# 环境信息文件（私人配置）
+dsw_env_info.txt
+*_env_info.txt

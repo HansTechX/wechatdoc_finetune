@@ -1,6 +1,39 @@
 # 保险意图识别微调项目
 
-基于 LLaMA Factory 的 LoRA 微调项目，用于保险业务意图分类识别。
+> **阿里云 PAI-DSW 平台专用** | 基于 LLaMA Factory 的 LoRA 微调项目，用于保险业务意图分类识别。
+
+## ⚠️ 环境要求
+
+本项目专为 **阿里云 PAI-DSW 平台** 设计，需要特定的镜像环境。
+
+### DSW 镜像要求
+
+| 组件 | 要求版本 |
+|------|----------|
+| **Python** | 3.12+ |
+| **CUDA** | 12.9 |
+| **PyTorch** | 2.8.0 |
+| **GPU** | PPU-ZW810E (95.6GB 显存) |
+
+### 核心依赖版本
+
+```
+torch==2.8.0
+transformers==4.57.1
+peft==0.17.1
+accelerate==1.11.0
+bitsandbytes==0.45.5
+llamafactory==0.9.4.dev0
+vllm==0.11.0+cu129
+openpyxl==3.1.5
+pyyaml==6.0.2
+tensorboard==2.19.0
+flash-attn==2.7.4.post1
+```
+
+> **注意**：本项目使用的镜像已预装所有依赖，请使用相同或兼容的 DSW 镜像。
+
+---
 
 ## 项目特点
 
@@ -13,10 +46,19 @@
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 确认 DSW 环境
+
+确保使用的 DSW 镜像包含上述依赖。可以通过以下命令检查：
 
 ```bash
-pip install llamafactory openpyxl pyyaml tensorboard
+# 检查关键依赖版本
+python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
+python -c "import llamafactory; print(f'LLaMA Factory: {llamafactory.__version__}')"
+
+# 检查 CUDA 和 GPU
+nvidia-smi
+python -c "import torch; print(f'CUDA 可用: {torch.cuda.is_available()}')"
 ```
 
 ### 2. 一键执行完整流程
@@ -439,6 +481,13 @@ test:
 
 ## 常见问题
 
+### Q: DSW 镜像选择建议？
+
+推荐使用包含以下组件的 DSW 镜像：
+- PyTorch 2.8.x + CUDA 12.9
+- 预装 flash-attn、vllm 等加速库
+- 镜像标签通常包含 `py310` 或 `py312`、`cuda12.9` 等标识
+
 ### Q: 显存不足怎么办？
 
 在 `config/train_config.yaml` 中调整：
@@ -455,12 +504,33 @@ quantization:
   bits: 4
 ```
 
-### Q: 模型下载慢？
+### Q: DSW 环境中模型下载路径？
 
-脚本会自动使用 ModelScope（国内速度快）。手动下载：
+模型会自动缓存到以下路径：
+- HuggingFace 缓存：`~/.cache/huggingface/hub/`
+- ModelScope 缓存：`~/.cache/modelscope/hub/`
+
+### Q: 如何在 DSW 中启动 HTTP 服务？
+
+使用 `serve.py` 或 `step4_test_http.py`：
 ```bash
-pip install modelscope
-python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3-8B')"
+# 启动服务（DSW 中需要设置 --host 0.0.0.0 才能外部访问）
+python serve.py start
+
+# 或使用 step4 测试
+python step4_test_http.py
+```
+
+**注意**：DSW 中需要配置端口映射才能外部访问服务。
+
+### Q: DSW 中如何查看训练日志？
+
+```bash
+# 实时查看日志
+tail -f outputs/<run_name>/logs/step2_train_*.log
+
+# 或使用 TensorBoard
+tensorboard --logdir outputs/ --port 6006 --host 0.0.0.0
 ```
 
 ### Q: 如何断点续训？
@@ -488,6 +558,8 @@ model:
 ├── train_webui.py              # WebUI 可视化训练
 ├── run_pipeline.py             # 一键流水线
 ├── run_pipeline_batch.py       # 批量训练
+├── check_dsw_env.sh            # DSW 环境查询脚本 (Bash)
+├── check_dsw_env.py            # DSW 环境查询脚本 (Python)
 ├── config/
 │   ├── train_config.yaml       # 训练配置
 │   └── serve_config.yaml       # 部署配置
@@ -500,6 +572,56 @@ model:
         ├── logs/
         ├── merged_model/
         └── inference_results_*.json
+```
+
+---
+
+## DSW 使用说明
+
+### 1. 创建 DSW 实例
+
+1. 登录阿里云 PAI 控制台
+2. 选择「DSW」→「新建实例」
+3. 选择包含 PyTorch 2.8.x + CUDA 12.9 的镜像
+4. 选择 GPU 规格（推荐使用 PPU-ZW810E 或更高）
+5. 启动实例
+
+### 2. 上传项目代码
+
+```bash
+# 方式一：使用 Git 克隆
+git clone git@gitee.com:hanslzh/wechatdoc_finetune.git
+
+# 方式二：上传压缩包后解压
+unzip wechatdoc_finetune.zip
+cd wechatdoc_finetune
+```
+
+### 3. 上传 Excel 数据文件
+
+将 `蒸馏模型-数据汇总-YYMMDD.xlsx` 上传到项目根目录。
+
+### 4. 执行训练流程
+
+```bash
+# 一键执行完整流程
+python run_pipeline.py
+
+# 或分步执行
+python step1_prepare.py --input 蒸馏模型-数据汇总-260421.xlsx
+python step2_train.py
+python step3_test.py
+```
+
+### 5. 下载训练结果
+
+```bash
+# 打包结果
+cd outputs/<run_name>/
+tar -czf result.tar.gz merged_model/ inference_results_*.json
+
+# 通过 DSW 界面下载或使用
+# dsw upload result.tar.gz
 ```
 
 ---

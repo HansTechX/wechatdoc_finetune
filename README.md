@@ -290,36 +290,6 @@ python serve.py start --no_wait
 
 ---
 
-### 🖥️ train_webui.py — WebUI 可视化训练
-
-启动 LLaMA Factory WebUI，通过浏览器进行交互式训练。
-
-**用法：**
-```bash
-# 启动 WebUI（默认端口 7860）
-python train_webui.py
-
-# 指定配置文件（预填参数到 WebUI）
-python train_webui.py --config config/train_config.yaml
-
-# 创建公开链接（远程访问）
-python train_webui.py --share
-
-# 跳过模型检查（加速启动）
-python train_webui.py --skip_model_check
-```
-
-**参数说明：**
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--config` | `config/train_config.yaml` | 配置文件路径 |
-| `--run_name` | 自动生成 | 运行名称 |
-| `--skip_model_check` | `false` | 跳过模型检查 |
-| `--share` | `false` | 创建 Gradio 公开链接 |
-
----
-
 ### 🔄 run_pipeline.py — 一键流水线
 
 串联四个阶段：数据准备 → 模型训练 → 本地测试 → HTTP API 测试。
@@ -555,7 +525,6 @@ model:
 ├── step3_test.py               # 本地推理测试
 ├── step4_test_http.py          # HTTP API 测试
 ├── serve.py                    # 模型服务管理
-├── train_webui.py              # WebUI 可视化训练
 ├── run_pipeline.py             # 一键流水线
 ├── run_pipeline_batch.py       # 批量训练
 ├── config/
@@ -564,8 +533,8 @@ model:
 ├── tools/                      # 辅助工具脚本
 │   ├── check_dsw_env.sh        # DSW 环境查询 (Bash)
 │   ├── check_dsw_env.py        # DSW 环境查询 (Python)
-│   ├── package.sh              # 部署打包脚本
-│   └── sync-to-both.sh         # Git 双仓库同步配置
+│   ├── train_webui.py          # WebUI 可视化训练（调试用）
+│   └── package.sh              # 部署打包脚本
 ├── data/                       # 数据集目录
 │   ├── dataset_info.json
 │   ├── mainintent_train.jsonl
@@ -576,6 +545,20 @@ model:
         ├── merged_model/
         └── inference_results_*.json
 ```
+
+---
+
+## 使用方式说明
+
+### 生产模式（推荐）
+适用于生产环境的自动化训练流程：
+- `run_pipeline.py`：一键完整流程
+- `step*.py`：分步 CLI 自动化
+- `run_pipeline_batch.py`：批量训练对比
+
+### 调试模式
+适用于开发阶段的可视化调试：
+- `tools/train_webui.py`：可视化训练，方便参数实验
 
 ---
 

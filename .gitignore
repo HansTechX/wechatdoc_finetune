@@ -4,8 +4,7 @@
 *.tar.gz
 
 # 生成的训练数据（通过 prepare_data.py 重新生成）
-data/intent_cls.jsonl
-data/intent_cls_val.jsonl
+data/*.jsonl
 data/dataset_info.json
 
 # 训练输出（模型、日志、检查点）
@@ -19,3 +18,9 @@ __pycache__/
 # Claude Code
 .claude/
 CLAUDE.md
+
+# macOS
+.DS_Store
+
+# Office 临时文件
+~$*

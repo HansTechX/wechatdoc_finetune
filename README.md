@@ -1,393 +1,515 @@
-# LLaMA Factory 单卡微调全流程指南
+# 保险意图识别微调项目
 
-> 阿里云 PAI 平台 | 单卡训练 | 意图识别微调
+基于 LLaMA Factory 的 LoRA 微调项目，用于保险业务意图分类识别。
 
-## 📁 项目结构
+## 项目特点
 
-```
-├── prepare_data.py             # 数据准备脚本（Excel -> JSONL）
-├── train.py                    # 主训练脚本（核心入口）
-├── inference_test.py           # 训练后推理验证
-├── 蒸馏模型-数据汇总-YYMMDD.xlsx  # 原始数据文件
-├── config/
-│   └── train_config.yaml       # 训练配置文件
-├── data/                       # 数据集目录（脚本自动生成）
-│   ├── dataset_info.json       # 数据集注册表
-│   ├── intent_cls.jsonl        # 训练集（LLaMA Factory 自动切分 80/20 用于训练和验证）
-│   └── intent_cls_val.jsonl    # 测试集（训练后评估用，不参与训练）
-└── outputs/                    # 所有运行记录（运行后自动创建）
-    ├── prepare_data.log        # 数据准备日志（所有运行追加）
-    └── run_20240101_120000/    # 训练运行目录
-        ├── llamafactory_train.yaml
-        ├── config_backup.yaml
-        ├── logs/
-        │   ├── run_20240101_120000.log      # 训练日志
-        │   └── inference_20240102_100000.log # 推理日志
-        ├── run_report.json
-        ├── run_summary.txt
-        ├── inference_results_20240102_100000.json
-        └── merged_model/
-```
+- **一键执行**：数据准备 → 训练 → 测试 → HTTP API 部署
+- **批量训练**：支持多个模型/提示词组合自动训练对比
+- **多种测试方式**：本地推理 + HTTP API 测试
+- **多种部署框架**：vLLM / SGLang / Ollama
 
 ---
 
-## 🚀 完整微调流程
+## 快速开始
 
-### 第一步：安装依赖
+### 1. 安装依赖
 
 ```bash
-pip install llamafactory
-pip install openpyxl
-pip install flash-attn --no-build-isolation  # 可选，仅 fa2 模式需要（默认 sdpa 无需安装）
-pip install tensorboard
+pip install llamafactory openpyxl pyyaml tensorboard
 ```
 
----
-
-### 第二步：准备数据
-
-#### 2.1 数据来源
-
-原始数据为 Excel 文件（`蒸馏模型-数据汇总-YYMMDD.xlsx`），包含以下 sheet：
-
-| Sheet | 说明 |
-|-------|------|
-| 提示词 | System 提示词模板（是否训练=是 的行生效） |
-| 业务编码映射 | 意图名称与编码的映射关系 |
-| 训练集 | 客户问题 + 人工标注结果 |
-| 测试集 | 客户问题 + 人工标注结果（训练后评估用，不参与训练） |
-
-#### 2.2 运行数据准备脚本
+### 2. 一键执行完整流程
 
 ```bash
-# 自动选择日期最新的 Excel 文件
-python prepare_data.py
+# 使用默认配置执行完整流程
+python run_pipeline.py
+
+# 指定提示词 ID
+python run_pipeline.py --prompt_id PROMPT_001
 
 # 指定 Excel 文件
-python prepare_data.py --input 蒸馏模型-数据汇总-260421.xlsx
+python run_pipeline.py --input 蒸馏模型-数据汇总-260421.xlsx
+```
 
-# 指定数据集名称
-python prepare_data.py --dataset_name intent_cls
+### 3. 查看结果
+
+训练结果保存在 `outputs/<run_name>/` 目录下，包含：
+- 合并后的模型：`merged_model/`
+- 训练日志：`logs/`
+- 推理结果：`inference_results_*.json`
+
+---
+
+## 核心脚本说明
+
+### 📊 step1_prepare.py — 数据准备
+
+从 Excel 文件生成 Alpaca JSONL 格式的微调数据。
+
+**用法：**
+```bash
+# 自动选择最新 Excel 文件
+python step1_prepare.py
+
+# 指定 Excel 文件
+python step1_prepare.py --input 蒸馏模型-数据汇总-260421.xlsx
+
+# 指定提示词 ID
+python step1_prepare.py --prompt_id PROMPT_004
+
+# 使用原始标签（不使用编码映射）
+python step1_prepare.py --raw_output
+
+# 指定输出目录
+python step1_prepare.py --output_dir data
 ```
 
 **参数说明：**
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--input` | 自动选最新 | Excel 文件路径，无参数时按文件名日期选最新 |
+| `--input` | 自动选最新 | Excel 文件路径 |
 | `--output_dir` | `data` | 输出目录 |
-| `--dataset_name` | `intent_cls` | 数据集名称 |
+| `--dataset_name` | `mainintent` | 数据集名称 |
+| `--prompt_id` | 配置文件/无 | 提示词 ID（优先级：命令行 > 配置文件 > 默认逻辑） |
+| `--raw_output` | `false` | 不使用编码映射，直接使用人工标注结果作为 output |
 
-**日志输出：** 运行日志同时输出到控制台和 `outputs/prepare_data.log`（追加模式）。
-
-**脚本会自动：**
-- 从"提示词"sheet 提取系统提示词
-- 从"业务编码映射"sheet 构建意图编码映射（以提示词为准）
-- 将"训练集"sheet 转换为 `intent_cls.jsonl`（训练数据，LLaMA Factory 自动 80/20 切分）
-- 将"测试集"sheet 转换为 `intent_cls_val.jsonl`（训练后评估用，不参与训练）
-- 注册训练数据集到 `data/dataset_info.json`
-- 更新 `config/train_config.yaml` 中的 `dataset_name`
-
-**数据流说明：**
-```
-Excel "训练集" → intent_cls.jsonl ─→ LLaMA Factory (val_size=0.2 自动切分)
-                                      ├── 80% 实际训练
-                                      └── 20% 训练中验证（eval_steps 评估）
-
-Excel "测试集" → intent_cls_val.jsonl → inference_test.py 训练后评估
-```
-
-**输出示例：**
-```
-  [训练集]
-    [客户信息变更-107] : 772 条
-    [理赔报案-201] : 172 条
-    [查询服务网点-203] : 300 条
-    ...
-    合计: 5731 条
-
-  [测试集（训练后评估用）]
-    [保单贷款-928] : 216 条
-    ...
-    合计: 3776 条
-```
-
-#### 2.3 生成的数据格式
-
-每行一条 JSON，Alpaca 格式：
-
-```json
-{
-  "instruction": "你是一个专业的保险业务意图识别助手...", 
-  "input": "换手机号码", 
-  "output": "107"}
-```
-
-| 字段 | 内容 |
-|------|------|
-| `instruction` | 系统提示词（完整的意图分类规则） |
-| `input` | 客户问题 |
-| `output` | 意图编码（如 107、201 等） |
+**自动完成：**
+- 从"提示词" sheet 提取系统提示词
+- 从"业务编码映射" sheet 构建意图编码映射
+- 生成 `mainintent_train.jsonl` 和 `mainintent_val.jsonl`
+- 注册数据集到 `data/dataset_info.json`
 
 ---
 
-### 第三步：确认训练配置
+### 🚀 step2_train.py — 模型训练
 
-数据准备完成后，`config/train_config.yaml` 会自动更新 `dataset_name`。
+基于 LLaMA Factory 的自动化训练脚本。
 
-如需修改模型路径或其他参数，编辑 `config/train_config.yaml`：
+**用法：**
+```bash
+# 使用默认配置训练
+python step2_train.py
+
+# 指定配置文件
+python step2_train.py --config config/train_config.yaml
+
+# 指定运行名称
+python step2_train.py --run_name exp01_lora_r8
+
+# 仅验证配置，不实际训练
+python step2_train.py --dry_run
+
+# 跳过 LoRA 权重合并
+python step2_train.py --skip_merge
+
+# 跳过模型评估
+python step2_train.py --skip_eval
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--config` | `config/train_config.yaml` | 训练配置文件路径 |
+| `--run_name` | 自动生成 | 运行名称（影响输出目录名） |
+| `--skip_merge` | `false` | 跳过 LoRA 权重合并 |
+| `--skip_eval` | `false` | 跳过模型评估 |
+| `--dry_run` | `false` | 仅验证配置和环境，不实际训练 |
+
+**自动完成：**
+- 环境检查（Python、PyTorch、CUDA、GPU、磁盘空间）
+- 模型完整性检查，缺失时自动下载
+- 数据格式验证
+- 启动训练并实时输出日志
+- 选择最佳 checkpoint
+- 合并 LoRA 权重为完整模型
+- 生成训练报告
+
+---
+
+### 🧪 step3_test.py — 本地推理测试
+
+使用 HuggingFace Transformers 加载合并后的模型进行推理测试。
+
+**用法：**
+```bash
+# 自动选择最新模型，使用验证集测试
+python step3_test.py
+
+# 指定模型路径
+python step3_test.py --model_path outputs/run_20260423_111922/merged_model
+
+# 指定测试文件
+python step3_test.py --test_file data/mainintent_val.jsonl
+
+# 限制测试用例数量（快速验证）
+python step3_test.py --max_samples 50
+
+# 调整生成参数
+python step3_test.py --temperature 0.3 --max_new_tokens 200
+
+# 提取编码模式（从输出中正则提取 3 位意图编码）
+python step3_test.py --extract_code
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--model_path` | 自动选最新 | 合并模型路径 |
+| `--test_file` | 自动选验证集 | 测试用例文件 |
+| `--system_prompt` | 从训练数据提取 | 系统提示词 |
+| `--output` | 自动生成 | 结果输出路径 |
+| `--max_new_tokens` | `100` | 最大生成 token 数 |
+| `--temperature` | `0.1` | 采样温度 |
+| `--enable_thinking` | `false` | 启用 Qwen3 思考链 |
+| `--debug` | `true` | 调试模式：打印第一条请求的完整结构 |
+| `--raw_output` | `true` | 不提取编码，直接使用模型原始输出 |
+| `--extract_code` | `false` | 提取编码模式（正则提取 3 位数字） |
+| `--max_samples` | 全部 | 测试用例数量上限 |
+
+---
+
+### 🌐 step4_test_http.py — HTTP API 测试
+
+模拟外部 OpenAI API 调用，测试模型的意图分类准确率。
+
+**用法：**
+```bash
+# 自动部署 + 测试（默认 vLLM）
+python step4_test_http.py
+
+# 跳过部署（服务已运行）
+python step4_test_http.py --skip_serve
+
+# 限制测试条数
+python step4_test_http.py --max_samples 50
+
+# 使用并发测试
+python step4_test_http.py --workers 4
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--config` | `config/train_config.yaml` | 训练配置文件路径 |
+| `--serve_config` | `config/serve_config.yaml` | 部署配置文件路径 |
+| `--model_path` | 自动选最新 | 合并模型路径 |
+| `--test_file` | 自动选验证集 | 测试用例文件 |
+| `--skip_serve` | `false` | 跳过启动服务（假设服务已运行） |
+| `--max_samples` | 全部 | 测试用例数量上限 |
+| `--workers` | `1` | 并发线程数 |
+
+**支持的部署框架：**
+- **vLLM**（默认）：生产首选，吞吐量最高
+- **SGLang**：结构化生成强，性能优秀
+- **Ollama**：本地部署最简单
+
+---
+
+### 🔧 serve.py — 模型服务管理
+
+独立的模型服务启停脚本，仅负责服务生命周期管理。
+
+**用法：**
+```bash
+# 启动服务（自动匹配最新模型）
+python serve.py start
+
+# 指定模型路径
+python serve.py start --model_path outputs/run_*/merged_model
+
+# 停止服务
+python serve.py stop
+
+# 查看服务状态
+python serve.py status
+
+# 重启服务
+python serve.py restart
+
+# 启动后不等待就绪
+python serve.py start --no_wait
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `action` | 必填 | `start` / `stop` / `status` / `restart` |
+| `--config` | `config/train_config.yaml` | 训练配置文件路径 |
+| `--serve_config` | `config/serve_config.yaml` | 部署配置文件路径 |
+| `--model_path` | 自动选最新 | 合并模型路径 |
+| `--timeout` | `300` | 等待服务就绪的超时秒数 |
+| `--no_wait` | `false` | 启动后不等待服务就绪 |
+
+---
+
+### 🖥️ train_webui.py — WebUI 可视化训练
+
+启动 LLaMA Factory WebUI，通过浏览器进行交互式训练。
+
+**用法：**
+```bash
+# 启动 WebUI（默认端口 7860）
+python train_webui.py
+
+# 指定配置文件（预填参数到 WebUI）
+python train_webui.py --config config/train_config.yaml
+
+# 创建公开链接（远程访问）
+python train_webui.py --share
+
+# 跳过模型检查（加速启动）
+python train_webui.py --skip_model_check
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--config` | `config/train_config.yaml` | 配置文件路径 |
+| `--run_name` | 自动生成 | 运行名称 |
+| `--skip_model_check` | `false` | 跳过模型检查 |
+| `--share` | `false` | 创建 Gradio 公开链接 |
+
+---
+
+### 🔄 run_pipeline.py — 一键流水线
+
+串联四个阶段：数据准备 → 模型训练 → 本地测试 → HTTP API 测试。
+
+**用法：**
+```bash
+# 完整流程
+python run_pipeline.py
+
+# 指定提示词
+python run_pipeline.py --prompt_id PROMPT_001
+
+# 跳过某个阶段
+python run_pipeline.py --skip_prepare
+python run_pipeline.py --skip_train
+python run_pipeline.py --skip_test
+python run_pipeline.py --skip_http
+
+# 仅执行某个阶段
+python run_pipeline.py --only_prepare
+python run_pipeline.py --only_train
+python run_pipeline.py --only_test
+python run_pipeline.py --only_http
+
+# 测试时限制用例数量
+python run_pipeline.py --max_test_samples 100
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--input` | 自动选最新 | Excel 数据文件路径 |
+| `--prompt_id` | 无 | 提示词 ID |
+| `--config` | `config/train_config.yaml` | 训练配置文件路径 |
+| `--skip_prepare` | `false` | 跳过数据准备 |
+| `--skip_train` | `false` | 跳过模型训练 |
+| `--skip_test` | `false` | 跳过本地推理测试 |
+| `--skip_http` | `false` | 跳过 HTTP API 测试 |
+| `--skip_serve` | `false` | 跳过模型服务部署 |
+| `--only_prepare` | `false` | 仅执行数据准备 |
+| `--only_train` | `false` | 仅执行模型训练 |
+| `--only_test` | `false` | 仅执行本地推理测试 |
+| `--only_http` | `false` | 仅执行 HTTP API 测试 |
+| `--max_test_samples` | 全部 | 测试用例数量上限 |
+| `--workers` | `1` | HTTP 测试并发线程数 |
+
+---
+
+### 📦 run_pipeline_batch.py — 批量训练
+
+批量执行多个训练任务，自动对比不同模型/提示词组合的效果。
+
+**用法：**
+```bash
+# 使用默认任务列表
+python run_pipeline_batch.py
+
+# 自定义任务列表
+python run_pipeline_batch.py --tasks "Qwen/Qwen3-4B:001,Qwen/Qwen3-4B:004,Qwen/Qwen3-8B:001"
+
+# 设置间隔时间（分钟）
+python run_pipeline_batch.py --interval 10
+
+# 不等待，连续执行
+python run_pipeline_batch.py --no-wait
+
+# 只显示将要执行的任务，不实际运行
+python run_pipeline_batch.py --dry-run
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--config` | `config/train_config.yaml` | 训练配置文件路径 |
+| `--tasks` | 默认任务列表 | 任务列表，格式: '模型1:prompt1,模型2:prompt2' |
+| `--interval` | `5` | 任务之间的间隔时间（分钟） |
+| `--dry-run` | `false` | 只显示将要执行的任务，不实际运行 |
+| `--no-wait` | `false` | 不等待，连续执行 |
+
+**量化配置自动检测：**
+- 模型名包含 `-4bit` 或 `bnb-4bit` → QLoRA 4bit
+- 模型名包含 `-8bit` 或 `bnb-8bit` → QLoRA 8bit
+- 其他模型 → LoRA（非量化）
+
+---
+
+## 配置文件说明
+
+### config/train_config.yaml — 训练配置
 
 ```yaml
+# 模型配置
 model:
-  name_or_path: "/path/to/your/model"   # ← 改成你的模型路径
+  name_or_path: "unsloth/Qwen3-4B-unsloth-bnb-4bit"  # 模型路径
+  trust_remote_code: true
 
+# 数据配置
 data:
-  dataset_name: "intent_cls"             # ← 已自动更新
-  template: "llama3"                     # ← 根据模型选择模板
+  dataset_name: "mainintent"     # 数据集名称
+  dataset_dir: "data"            # 数据集目录
+  template: "qwen3_nothink"      # 模板类型
+  max_seq_length: 4096           # 最大序列长度
+  prompt_id: null                # 提示词 ID
 
+# 训练配置
 training:
-  num_epochs: 3
-  per_device_train_batch_size: 2
-  learning_rate: 1.0e-4
-  val_size: 0.2                          # ← 训练数据中 20% 用于验证集
+  stage: "sft"                   # 训练阶段
+  finetuning_type: "lora"        # 微调类型
+  num_epochs: 2                  # 训练轮次
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-5
+  bf16: true
 
+# LoRA 配置
 lora:
   rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: "all"
+
+# 量化配置
+quantization:
+  enable: false
+  bits: 4
 ```
 
-**显存参考表（LoRA 单卡）**
+### config/serve_config.yaml — 部署配置
 
-| 显存    | 推荐 batch_size | 推荐 max_seq_length |
-|---------|-----------------|----------------------|
-| 16 GB   | 1               | 1024                 |
-| 24 GB   | 2               | 2048                 |
-| 40 GB   | 4               | 4096                 |
-| 80 GB   | 8               | 8192                 |
-
----
-
-### 第四步：启动训练
-
-```bash
-# 单卡训练
-python train.py --config config/train_config.yaml
-
-# 指定运行名称（推荐，便于管理）
-python train.py --config config/train_config.yaml --run_name exp01_lora_r8
-
-# 验证配置（不实际训练）
-python train.py --config config/train_config.yaml --dry_run
-
-# 训练完跳过合并
-python train.py --config config/train_config.yaml --skip_merge
-```
-
----
-
-### 第五步：监控训练过程
-
-```bash
-# 查看实时日志
-tail -f outputs/run_xxx/logs/run_xxx.log
-
-# 启动 TensorBoard 查看 loss 曲线
-tensorboard --logdir outputs/ --port 6006
-# 浏览器打开 http://localhost:6006
-```
-
----
-
-### 第六步：验证训练结果
-
-```bash
-# 自动选择最新的合并模型（推荐）
-python inference_test.py
-
-# 手动指定模型路径
-python inference_test.py --model_path outputs/run_xxx/merged_model
-
-# 使用验证集做批量测试
-python inference_test.py --test_file data/intent_cls_val.jsonl
-
-# 指定输出路径
-python inference_test.py --output outputs/run_xxx/inference_results.json
-```
-
-**参数说明：**
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--model_path` | 自动选最新 | 合并模型路径，无参数时自动选 `outputs/run_*/merged_model` 中最新的 |
-| `--test_file` | 内置用例 | 测试用例文件，支持 JSON 和 JSONL 格式 |
-| `--template` | `llama3` | 对话模板 |
-| `--output` | 自动生成 | 结果输出路径，默认保存在模型目录下 |
-
-**脚本会自动：**
-- 从训练数据中提取系统提示词（意图分类规则）
-- 将用户问题 + 系统提示词发送给模型推理
-- 从模型输出中提取意图编码，与期望结果对比
-- 输出总准确率、各意图编码准确率、错误用例详情
-- 运行日志保存至 `outputs/run_xxx/logs/inference_{timestamp}.log`
-- 测试结果保存至 `outputs/run_xxx/inference_results_{timestamp}.json`
-
-**输出示例：**
-```
-  [v] '换手机号码' -> 107
-  [x] '你好' -> 401 (期望: 402)
-  ...
-============================================================
-测试报告
-============================================================
-  总用例数: 23
-  有标注数: 23
-  准确率:   87.0% (20/23)
-
-  [各意图准确率]
-    [v] [107] 1/1 (100%)
-    [v] [201] 1/1 (100%)
-    [x] [402] 0/1 (0%)
-    ...
-
-  [错误用例] (3 条)
-    '你好' -> 预测: 401, 正确: 402
-============================================================
-```
-
----
-
-### 第七步：查看训练报告
-
-训练结束后，自动生成两个报告文件：
-
-**`run_report.json`** - 完整机器可读报告（含所有参数）
-
-**`run_summary.txt`** - 人类可读摘要，示例：
-```
-============================================================
-训练运行摘要: exp01_lora_r8
-============================================================
-状态:     ✓ 成功
-时间:     2024-01-01T14:30:00
-耗时:     02h 15m 33s
-模型:     meta-llama/Meta-Llama-3.1-8B-Instruct
-训练方式: lora
-数据集:   intent_cls (5731 条)
-Epochs:  3
-LR:      0.0001
-============================================================
-```
-
----
-
-### 第八步：服务器部署
-
-#### 8.1 打包项目
-
-使用项目提供的打包脚本，自动遵循 `.gitignore` 规则（排除训练输出、数据文件等）：
-
-```bash
-# 方式一：使用打包脚本（推荐）
-./package.sh
-```
-
-**脚本功能：**
-- 自动检测 git 仓库状态
-- 提示未提交更改（可选择继续或取消）
-- 生成带时间戳的压缩包：`wechatdoc_finetune_YYYYMMDD_HHMMSS.tar.gz`
-- 显示上传命令示例
-
-**自动排除内容：**
-- `*.xlsx` - 原始 Excel 数据文件
-- `data/*.jsonl` - 生成的训练数据
-- `data/dataset_info.json` - 数据集注册表
-- `outputs/` - 训练输出目录
-- `__pycache__/` - Python 缓存
-
-#### 8.2 上传到服务器
-
-```bash
-# 上传压缩包
-scp wechatdoc_finetune_YYYYMMDD_HHMMSS.tar.gz user@server:/path/to/destination/
-
-# 单独上传 Excel 数据文件（必须）
-scp 蒸馏模型-数据汇总-YYMMDD.xlsx user@server:/path/to/project/
-```
-
-#### 8.3 服务器端部署
-
-```bash
-# 1. 解压项目
-tar -xzf wechatdoc_finetune_YYYYMMDD_HHMMSS.tar.gz
-cd wechatdoc_finetune
-
-# 2. 创建虚拟环境（推荐）
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# source venv/Scripts/activate  # Windows
-
-# 3. 安装依赖
-pip install llamafactory
-pip install openpyxl
-pip install flash-attn --no-build-isolation  # 可选，仅 fa2 模式需要
-pip install tensorboard
-
-# 4. 生成训练数据
-python prepare_data.py --input 蒸馏模型-数据汇总-YYMMDD.xlsx
-
-# 5. 修改配置文件（如需要）
-vi config/train_config.yaml
-# 主要修改模型路径: model.name_or_path
-
-# 6. 启动训练
-python train.py --config config/train_config.yaml
-
-# 7. 监控训练（另开终端）
-tail -f outputs/run_xxx/logs/run_xxx.log
-```
-
----
-
-## 🔧 常见问题
-
-**Q: OOM（显存不足）怎么办？**
 ```yaml
-per_device_train_batch_size: 1
-gradient_accumulation_steps: 8
-max_seq_length: 1024
+# 服务端配置
+serving:
+  framework: "vllm"              # vllm / sglang / ollama
+  host: "127.0.0.1"
+  port: 8000
+  served_model_name: "qwen3-intent"
+  gpu_memory_utilization: 0.9
+  max_model_len: 2048
+
+# 客户端配置
+client:
+  mode: "openai"                 # openai / requests
+  timeout: 30
+  max_retries: 3
+  workers: 1
+
+# 测试配置
+test:
+  temperature: 0.1
+  max_new_tokens: 100
+  enable_thinking: false
+  extract_code: true
+  log_request_body: true
+```
+
+---
+
+## 常见问题
+
+### Q: 显存不足怎么办？
+
+在 `config/train_config.yaml` 中调整：
+```yaml
+training:
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+
+data:
+  max_seq_length: 1024
+
 quantization:
   enable: true
   bits: 4
 ```
 
-**Q: 训练 loss 不下降？**
-- 检查数据格式是否正确（运行 `--dry_run` 排查）
-- 尝试降低学习率（`1e-4` → `5e-5`）
-- 检查 `template` 是否与模型匹配
+### Q: 模型下载慢？
 
-**Q: 如何断点续训？**
-```yaml
-# 将模型路径指向具体的 checkpoint 子目录
-model:
-  name_or_path: "outputs/run_20240101_120000/checkpoint-500"
-# 或者使用 LLaMA Factory 的 resume_from_checkpoint 参数
+脚本会自动使用 ModelScope（国内速度快）。手动下载：
+```bash
+pip install modelscope
+python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3-8B')"
 ```
 
-**Q: LoRA vs QLoRA 怎么选？**
-- 显存充足（≥ 24GB）→ LoRA（更快，效果略好）
-- 显存不足（< 16GB）→ QLoRA（量化节省显存）
+### Q: 如何断点续训？
+
+将配置中的模型路径指向 checkpoint 子目录：
+```yaml
+model:
+  name_or_path: "outputs/run_20260423_111922/checkpoint-500"
+```
+
+### Q: 预量化模型（Unsloth）无法合并？
+
+这是正常现象，预量化模型的 LoRA 权重无法合并。脚本会自动检测并跳过合并步骤，直接使用 checkpoint 进行推理。
 
 ---
 
-## 📊 模型对应模板速查
+## 项目结构
 
-| 模型系列            | template 值     |
-|--------------------|-----------------|
-| Llama-3.x          | llama3          |
-| Qwen 1/2/2.5       | qwen            |
-| Mistral/Mixtral    | mistral         |
-| ChatGLM3           | chatglm3        |
-| Baichuan2          | baichuan2       |
-| InternLM2          | intern2         |
-| Gemma              | gemma           |
-| DeepSeek-V2        | deepseekcoder   |
-| Yi                 | yi              |
+```
+├── step1_prepare.py            # 数据准备
+├── step2_train.py              # 模型训练
+├── step3_test.py               # 本地推理测试
+├── step4_test_http.py          # HTTP API 测试
+├── serve.py                    # 模型服务管理
+├── train_webui.py              # WebUI 可视化训练
+├── run_pipeline.py             # 一键流水线
+├── run_pipeline_batch.py       # 批量训练
+├── config/
+│   ├── train_config.yaml       # 训练配置
+│   └── serve_config.yaml       # 部署配置
+├── data/                       # 数据集目录
+│   ├── dataset_info.json
+│   ├── mainintent_train.jsonl
+│   └── mainintent_val.jsonl
+└── outputs/                    # 训练输出
+    └── <run_name>/
+        ├── logs/
+        ├── merged_model/
+        └── inference_results_*.json
+```
+
+---
+
+## 模板速查
+
+| 模型系列 | template 值 |
+|---------|-------------|
+| Qwen3（分类/简单任务） | `qwen3_nothink` |
+| Qwen3（通用） | `qwen3` |
+| Qwen 1/2/2.5 | `qwen` |
+| Llama-3.x | `llama3` |
+| ChatGLM3 | `chatglm3` |

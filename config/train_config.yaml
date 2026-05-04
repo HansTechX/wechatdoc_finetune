@@ -3,19 +3,29 @@
 #  使用前请根据实际情况修改各字段
 # =============================================================
 
+# ─── 运行命名 ────────────────────────────────────────────────
+run:
+  task: "majorintent"                # 任务类型标识（用于 run_name）
+  version: "v1"                      # 版本号（用于 run_name）
+
 # ─── 模型配置 ─────────────────────────────────────────────────
 model:
-  name_or_path: "Qwen/Qwen3-8B"   # Qwen3 已包含指令微调，非思考模式用于高效任务
+  # name_or_path: "Qwen/Qwen3-8B"   # Qwen/Qwen3-8B
+  # name_or_path: "Qwen/Qwen3-4B"  # Qwen/Qwen3-4B
+  name_or_path: "unsloth/Qwen3-4B-unsloth-bnb-4bit"  # unsloth/Qwen3-4B-unsloth-bnb-4bit
+  # name_or_path: "Qwen/Qwen3-1.7B"  # Qwen/Qwen3-1.7B
+  #name_or_path: "Qwen/Qwen3.5-9B"  # Qwen3.5  底层依赖不支持新版模型
   trust_remote_code: true
 
 # ─── 数据配置 ─────────────────────────────────────────────────
 data:
-  dataset_name: "intent_cls"          # 对应 data/dataset_info.json 中的 key
+  dataset_name: "mainintent"          # 对应 data/dataset_info.json 中的 key
   dataset_dir: "data"                 # dataset_info.json 所在目录
   template: "qwen3_nothink"           # 非思考模式，适合意图分类等简单任务（qwen3_nothink | qwen3 | qwen | llama3）
-  max_seq_length: 2048                # 最大序列长度
+  max_seq_length: 4096                # 最大序列长度
   max_samples: null                   # 限制样本数，null=不限制（调试时可设为 1000）
   num_workers: 4                      # 数据预处理线程数
+  prompt_id: null                     # 提示词ID（step1_prepare.py 使用，null=使用默认逻辑）
 
 # ─── 训练配置 ─────────────────────────────────────────────────
 training:
@@ -23,10 +33,10 @@ training:
   finetuning_type: "lora"             # lora | qlora | full | freeze
 
   # 超参数
-  num_epochs: 3
-  per_device_train_batch_size: 2
+  num_epochs: 2                      # 训练批次
+  per_device_train_batch_size: 4     # 每次训练给模型的数据条数
   gradient_accumulation_steps: 4     # 等效 batch_size = 2 * 4 * GPU数
-  learning_rate: 1.0e-4
+  learning_rate: 5.0e-5
   lr_scheduler: "cosine"             # linear | cosine | constant
   warmup_ratio: 0.05
   weight_decay: 0.01

@@ -7,6 +7,8 @@
 
 import os
 import sys
+import re
+import glob
 import json
 import time
 import shutil
@@ -19,10 +21,12 @@ from typing import Optional
 
 import yaml
 
+
 # ─── 日志配置 ────────────────────────────────────────────────
-def setup_logger(log_dir: str, run_name: str) -> logging.Logger:
+def setup_logger(log_dir: str) -> logging.Logger:
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"{run_name}.log")
+    log_ts = datetime.now().strftime("%m%d_%H%M")
+    log_file = os.path.join(log_dir, f"step2_train_{log_ts}.log")
 
     logger = logging.getLogger("finetune")
     logger.setLevel(logging.DEBUG)
@@ -57,10 +61,264 @@ def load_config(config_path: str) -> dict:
     raise ValueError(f"不支持的配置格式: {config_path}")
 
 
+def generate_run_name(cfg: dict) -> str:
+    """根据配置自动生成规范化 run_name: {task}_{model}_{lr}_{loraR}_{dataset}_{version}
+    示例: majorintent_qwen8b_lr1e4_r8_intentcode_v1
+    """
+    # task
+    task = cfg.get("run", {}).get("task", "majorintent")
+
+    # model short name: "Qwen/Qwen3-8B" → "qwen8b"
+    model_name = cfg.get("model", {}).get("name_or_path", "unknown")
+    model_short = model_name.rstrip("/").split("/")[-1].lower()
+    model_short = model_short.replace("-instruct", "")
+    model_short = re.sub(r'(\w+?)[\d.]*-(\d+b)', r'\1\2', model_short)
+
+    # lr: 1.0e-4 → "lr1e4"
+    lr = cfg.get("training", {}).get("learning_rate", 1e-4)
+    lr_str = f"{lr:.0e}"
+    m = re.match(r'(\d+)e([+-])(\d+)', lr_str)
+    if m:
+        coef, sign, exp = m.groups()
+        exp = exp.lstrip('0') or '0'
+        lr_part = f"lr{coef}e{exp}"
+    else:
+        lr_part = f"lr{lr}"
+
+    # lora rank
+    lora_rank = cfg.get("lora", {}).get("rank", 8)
+    lora_part = f"r{lora_rank}"
+
+    # dataset: 自动检测 output 是编码还是中文名
+    dataset = "intentcode"  # 默认
+    data_dir = cfg.get("data", {}).get("dataset_dir", "data")
+    dataset_name = cfg.get("data", {}).get("dataset_name", "")
+    data_file = os.path.join(data_dir, f"{dataset_name}_train.jsonl")
+    if os.path.exists(data_file):
+        with open(data_file, "r", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+            if first_line:
+                first_output = json.loads(first_line).get("output", "")
+                if not re.match(r"^\d{3}$", first_output):
+                    dataset = "intentname"
+
+    # version
+    version = cfg.get("run", {}).get("version", "v1")
+
+    return f"{task}_{model_short}_{lr_part}_{lora_part}_{dataset}_{version}"
+
+
+# ─── 模型检测与下载 ─────────────────────────────────────────────
+def check_model_completeness(model_path: str, logger: logging.Logger) -> bool:
+    """检查模型文件是否完整"""
+    model_path = os.path.expanduser(model_path)
+
+    # 处理 HuggingFace 模型 ID (如 "Qwen/Qwen3-8B")
+    if "/" in model_path and not model_path.startswith("/"):
+        # HuggingFace 缓存路径
+        hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+        model_dir_name = model_path.replace("/", "--")
+        possible_paths = [
+            os.path.join(hf_cache, f"models--{model_dir_name}", "snapshots", "*"),
+            os.path.join(hf_cache, model_path),
+        ]
+
+        actual_path = None
+        for path in possible_paths:
+            matches = Path(path).expanduser()
+            if "*" in str(matches):
+                import glob as _glob
+                matches = _glob.glob(str(matches))
+                if matches:
+                    actual_path = matches[0]
+                    break
+            elif matches.exists():
+                actual_path = str(matches)
+                break
+
+        if actual_path is None:
+            logger.info(f"  模型未找到: {model_path}")
+            return False
+
+        model_path = actual_path
+    elif not os.path.isabs(model_path):
+        model_path = os.path.abspath(model_path)
+
+    logger.info(f"  检查路径: {model_path}")
+
+    # 检查必需文件
+    required_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
+    missing_files = []
+
+    for file in required_files:
+        file_path = os.path.join(model_path, file)
+        if not os.path.exists(file_path):
+            missing_files.append(file)
+
+    # 检查 safetensors 权重文件
+    index_file = os.path.join(model_path, "model.safetensors.index.json")
+    has_weights = False
+
+    if os.path.exists(index_file):
+        try:
+            with open(index_file, "r") as f:
+                index = json.load(f)
+            total_size = index.get("metadata", {}).get("total_size", 0)
+            weight_map = index.get("weight_map", {})
+
+            weight_files = set(weight_map.values())
+            missing_weights = []
+            for wf in weight_files:
+                wf_path = os.path.join(model_path, wf)
+                if not os.path.exists(wf_path):
+                    missing_weights.append(wf)
+
+            if missing_weights:
+                logger.warning(f"  缺少权重文件: {missing_weights}")
+            else:
+                has_weights = True
+                logger.info(f"  权重文件完整 ({total_size / 1e9:.2f} GB)")
+        except Exception as e:
+            logger.warning(f"  读取 safetensors 索引失败: {e}")
+    else:
+        safetensors_files = list(Path(model_path).glob("*.safetensors"))
+        bin_files = list(Path(model_path).glob("*.bin"))
+
+        if safetensors_files:
+            total_size = sum(f.stat().st_size for f in safetensors_files)
+            logger.info(f"  找到 {len(safetensors_files)} 个 safetensors 文件 ({total_size / 1e9:.2f} GB)")
+            has_weights = True
+        elif bin_files:
+            total_size = sum(f.stat().st_size for f in bin_files)
+            logger.info(f"  找到 {len(bin_files)} 个 bin 文件 ({total_size / 1e9:.2f} GB)")
+            has_weights = True
+        else:
+            logger.warning("  未找到模型权重文件")
+
+    if missing_files:
+        logger.warning(f"  缺少配置文件: {missing_files}")
+        return False
+
+    if not has_weights:
+        logger.warning("  模型权重不完整")
+        return False
+
+    logger.info("  模型完整性检查通过")
+    return True
+
+
+def download_model_with_modelscope(
+    model_id: str,
+    cache_dir: str,
+    logger: logging.Logger
+) -> str:
+    """使用 ModelScope 下载模型到 HuggingFace 缓存路径"""
+    logger.info(f"  使用 ModelScope 下载: {model_id}")
+
+    try:
+        from modelscope import snapshot_download
+    except ImportError:
+        logger.error("  ModelScope 未安装，正在安装...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "modelscope", "-q"],
+            check=True
+        )
+        from modelscope import snapshot_download
+        logger.info("  ModelScope 安装完成")
+
+    os.makedirs(cache_dir, exist_ok=True)
+
+    import logging as ms_logging
+    ms_logging.basicConfig(level=logging.INFO)
+
+    logger.info("  开始下载...")
+    model_path = snapshot_download(
+        model_id,
+        cache_dir=cache_dir,
+        revision='master'
+    )
+
+    logger.info(f"  下载完成: {model_path}")
+    return model_path
+
+
+def ensure_model_available(cfg: dict, logger: logging.Logger) -> str:
+    """确保模型可用：依次检查本地路径、HuggingFace 缓存、ModelScope 缓存，都不存在则下载"""
+    model_name_or_path = cfg["model"]["name_or_path"]
+
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【模型检查】")
+    logger.info(f"{'─'*60}")
+    logger.info(f"  模型: {model_name_or_path}")
+
+    # 1. 本地路径
+    if os.path.exists(model_name_or_path):
+        logger.info(f"  使用本地模型: {model_name_or_path}")
+        if check_model_completeness(model_name_or_path, logger):
+            return model_name_or_path
+        else:
+            raise FileNotFoundError(f"本地模型不完整: {model_name_or_path}")
+
+    # 2. HuggingFace 缓存
+    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+    model_dir_name = model_name_or_path.replace("/", "--")
+    hf_model_path = os.path.join(hf_cache, f"models--{model_dir_name}")
+
+    snapshot_dirs = glob.glob(os.path.join(hf_model_path, "snapshots", "*"))
+    if snapshot_dirs:
+        logger.info(f"  检查 HuggingFace 缓存: {snapshot_dirs[0]}")
+        if check_model_completeness(model_name_or_path, logger):
+            logger.info(f"  使用 HuggingFace 缓存: {snapshot_dirs[0]}")
+            cfg["model"]["name_or_path"] = snapshot_dirs[0]
+            return snapshot_dirs[0]
+
+    # 3. ModelScope 缓存
+    ms_cache_paths = [
+        os.path.expanduser("~/.cache/modelscope/hub"),
+        os.path.expanduser("~/.modelscope/hub"),
+    ]
+    for ms_cache in ms_cache_paths:
+        ms_model_path = os.path.join(ms_cache, model_name_or_path)
+        if os.path.exists(ms_model_path):
+            logger.info(f"  检查 ModelScope 缓存: {ms_model_path}")
+            if check_model_completeness(ms_model_path, logger):
+                logger.info(f"  使用 ModelScope 缓存: {ms_model_path}")
+                cfg["model"]["name_or_path"] = ms_model_path
+                return ms_model_path
+
+    # 4. 缓存中均未找到，通过 ModelScope 下载
+    logger.warning(f"  本地未找到模型，将通过 ModelScope 下载")
+
+    modelscope_id_map = {
+        "Qwen/Qwen3-8B": "Qwen/Qwen3-8B",
+        "Qwen/Qwen3-4B": "Qwen/Qwen3-4B",
+        "Qwen/Qwen3-1.7B": "Qwen/Qwen3-1.7B",
+        "Qwen/Qwen3.5-9B": "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen2.5-7B-Instruct": "Qwen/Qwen2.5-7B-Instruct",
+        "meta-llama/Meta-Llama-3.1-8B-Instruct": "AI-ModelScope/Meta-Llama-3.1-8B-Instruct",
+    }
+    modelscope_id = modelscope_id_map.get(model_name_or_path, model_name_or_path)
+
+    try:
+        downloaded_path = download_model_with_modelscope(
+            modelscope_id,
+            hf_cache,
+            logger
+        )
+        cfg["model"]["name_or_path"] = downloaded_path
+        logger.info(f"  模型已下载: {downloaded_path}")
+        return downloaded_path
+
+    except Exception as e:
+        logger.error(f"  下载失败: {e}")
+        raise RuntimeError(f"无法下载模型 {model_name_or_path}: {e}")
+
+
 # ─── 环境检查 ────────────────────────────────────────────────
 def check_environment(logger: logging.Logger) -> dict:
-    logger.info("=" * 60)
-    logger.info("【环境检查】")
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【环境检查】")
+    logger.info(f"{'─'*60}")
 
     env_info = {}
 
@@ -99,21 +357,23 @@ def check_environment(logger: logging.Logger) -> dict:
         logger.warning("  LLaMA Factory 未安装，请执行: pip install llamafactory")
         env_info["llamafactory"] = None
 
-    # 磁盘空间（检查当前工作目录，而非脚本目录）
+    # 磁盘空间
     disk = shutil.disk_usage(os.getcwd())
     free_gb = disk.free / 1e9
     env_info["disk_free_gb"] = round(free_gb, 1)
     logger.info(f"  磁盘剩余: {free_gb:.1f} GB")
     if free_gb < 50:
-        logger.warning("  [!] 磁盘剩余不足 50GB，建议清理后再训练")
+        logger.warning("  磁盘剩余不足 50GB，建议清理后再训练")
 
-    logger.info("=" * 60)
     return env_info
 
 
 # ─── 数据验证 ────────────────────────────────────────────────
 def validate_dataset(data_path: str, logger: logging.Logger) -> dict:
-    logger.info("【数据集验证】")
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【数据集验证】")
+    logger.info(f"{'─'*60}")
+
     stats = {"total": 0, "valid": 0, "invalid": 0, "errors": []}
 
     if not os.path.exists(data_path):
@@ -138,8 +398,8 @@ def validate_dataset(data_path: str, logger: logging.Logger) -> dict:
 
     stats["total"] = len(records)
 
-    # 字段检查（Alpaca / ShareGPT 格式）
-    for i, rec in enumerate(records[:5000]):  # 最多抽查 5000 条
+    # 字段检查（验证全部数据）
+    for i, rec in enumerate(records):
         if "conversations" in rec:  # ShareGPT 格式
             valid = (
                 isinstance(rec.get("conversations"), list) and
@@ -161,12 +421,19 @@ def validate_dataset(data_path: str, logger: logging.Logger) -> dict:
     logger.info(f"  格式异常: {stats['invalid']}")
     if stats["errors"]:
         for err in stats["errors"][:5]:
-            logger.warning(f"  [!] {err}")
+            logger.warning(f"  {err}")
 
     if stats["invalid"] / max(stats["total"], 1) > 0.05:
         raise ValueError(f"数据集异常比例 > 5%，请检查数据质量！")
 
-    logger.info("  [v] 数据集验证通过")
+    logger.info("  数据集验证通过")
+
+    # 打印数据样例
+    logger.info(f"  {'─'*40}")
+    logger.info(f"  数据样例（前 3 条）:")
+    for i, rec in enumerate(records[:3], 1):
+        logger.info(f"  [{i}] {json.dumps(rec, ensure_ascii=False)}")
+
     return stats
 
 
@@ -222,7 +489,8 @@ def generate_llamafactory_config(cfg: dict, run_name: str, output_dir: str) -> s
         "val_size": cfg["training"].get("val_size", 0.2),
         "eval_strategy": cfg["training"].get("eval_strategy", "steps"),
         "eval_steps": cfg["training"].get("eval_steps", 100),
-        "load_best_model_at_end": True,
+        "load_best_model_at_end": False,
+        "save_total_limit": cfg["training"].get("save_total_limit", 5),
 
         # 量化（QLoRA）
         "quantization_bit": cfg["quantization"].get("bits", None) if cfg.get("quantization", {}).get("enable") else None,
@@ -232,7 +500,7 @@ def generate_llamafactory_config(cfg: dict, run_name: str, output_dir: str) -> s
         "report_to": cfg["logging"].get("report_to", "tensorboard"),
         "run_name": run_name,
 
-        # Flash Attention（不支持 fa2 的 GPU 自动回退为 sdpa）
+        # Flash Attention
         "flash_attn": cfg["training"].get("flash_attention", "sdpa"),
     }
 
@@ -262,7 +530,9 @@ def run_training(
     lf_config_path: str,
     logger: logging.Logger
 ) -> subprocess.CompletedProcess:
-    logger.info("【启动训练】")
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【启动训练】")
+    logger.info(f"{'─'*60}")
 
     cmd = ["llamafactory-cli", "train", lf_config_path]
     logger.info(f"  训练命令: {' '.join(cmd)}")
@@ -270,7 +540,6 @@ def run_training(
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    # 实时流式输出
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -289,8 +558,94 @@ def run_training(
     return process
 
 
+# ─── 智能选择最佳 Checkpoint ─────────────────────────────────────
+def evaluate_all_checkpoints(
+    lf_config_path: str,
+    output_dir: str,
+    logger: logging.Logger
+) -> str:
+    """训练结束后评估所有 checkpoint，返回 loss 最小的那个"""
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【评估所有 Checkpoint】")
+    logger.info(f"{'─'*60}")
+
+    # 收集所有 checkpoint
+    checkpoints = []
+    for name in os.listdir(output_dir):
+        full = os.path.join(output_dir, name)
+        if os.path.isdir(full) and name.startswith("checkpoint-"):
+            try:
+                step = int(name.split("-")[1])
+                checkpoints.append((step, full))
+            except (ValueError, IndexError):
+                pass
+
+    if not checkpoints:
+        raise FileNotFoundError(f"未找到 checkpoint 目录: {output_dir}")
+
+    checkpoints.sort(key=lambda x: x[0])
+    logger.info(f"  找到 {len(checkpoints)} 个 checkpoint: {[c[0] for c in checkpoints]}")
+
+    # 读取训练配置
+    with open(lf_config_path, "r", encoding="utf-8") as f:
+        train_config = yaml.safe_load(f)
+
+    train_config["load_best_model_at_end"] = False
+    train_config["do_train"] = False
+    train_config["do_predict"] = False
+
+    eval_results = {}
+
+    for step, ckpt_path in checkpoints:
+        logger.info(f"  评估 checkpoint-{step}...")
+        train_config["model_name_or_path"] = train_config.get("model_name_or_path")
+        train_config["adapter_name_or_path"] = ckpt_path
+        train_config["output_dir"] = os.path.join(output_dir, f"eval_{step}")
+
+        eval_config_path = os.path.join(output_dir, f"eval_{step}.yaml")
+        with open(eval_config_path, "w", encoding="utf-8") as f:
+            yaml.dump(train_config, f, allow_unicode=True, sort_keys=False)
+
+        result = subprocess.run(
+            ["llamafactory-cli", "eval", eval_config_path],
+            capture_output=True, text=True, timeout=600
+        )
+
+        if result.returncode == 0:
+            output = result.stdout + result.stderr
+            loss_match = re.search(r"eval_loss[:\s]+([0-9.]+)", output)
+            if loss_match:
+                loss = float(loss_match.group(1))
+                eval_results[step] = loss
+                logger.info(f"    checkpoint-{step}: loss = {loss:.4f}")
+            else:
+                logger.warning(f"    checkpoint-{step}: 无法解析 loss")
+        else:
+            logger.warning(f"    checkpoint-{step}: 评估失败")
+
+        try:
+            os.remove(eval_config_path)
+        except:
+            pass
+
+    if eval_results:
+        best_step = min(eval_results, key=eval_results.get)
+        best_loss = eval_results[best_step]
+        best_path = os.path.join(output_dir, f"checkpoint-{best_step}")
+        logger.info(f"  最佳 checkpoint: {best_step} (loss={best_loss:.4f})")
+        return best_path
+
+    checkpoints.sort(key=lambda x: x[0], reverse=True)
+    logger.warning("  评估失败，使用最新 checkpoint")
+    return checkpoints[0][1]
+
+
 # ─── 查找最佳 Checkpoint ──────────────────────────────────────
-def find_best_checkpoint(output_dir: str, logger: logging.Logger) -> str:
+def find_best_checkpoint(
+    output_dir: str,
+    logger: logging.Logger,
+    lf_config_path: Optional[str] = None
+) -> str:
     """在 output_dir 下查找 trainer_state.json 中记录的最佳 checkpoint"""
     state_path = os.path.join(output_dir, "trainer_state.json")
     if os.path.exists(state_path):
@@ -298,7 +653,10 @@ def find_best_checkpoint(output_dir: str, logger: logging.Logger) -> str:
             state = json.load(f)
         best = state.get("best_model_checkpoint")
         if best and os.path.isdir(best):
-            logger.info(f"  最佳 checkpoint: {best}")
+            logger.info(f"  trainer_state.json 记录的最佳 checkpoint: {best}")
+            if lf_config_path:
+                logger.info(f"  执行最终评估以确认最佳 checkpoint...")
+                return evaluate_all_checkpoints(lf_config_path, output_dir, logger)
             return best
 
     # 回退：选择编号最大的 checkpoint 目录
@@ -322,7 +680,9 @@ def find_best_checkpoint(output_dir: str, logger: logging.Logger) -> str:
 
 # ─── 模型合并（LoRA → 完整模型）────────────────────────────
 def merge_lora_weights(cfg: dict, adapter_path: str, output_path: str, logger: logging.Logger):
-    logger.info("【合并 LoRA 权重】")
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【合并 LoRA 权重】")
+    logger.info(f"{'─'*60}")
 
     merge_config = {
         "model_name_or_path": cfg["model"]["name_or_path"],
@@ -330,7 +690,7 @@ def merge_lora_weights(cfg: dict, adapter_path: str, output_path: str, logger: l
         "template": cfg["data"].get("template", "llama3"),
         "finetuning_type": "lora",
         "export_dir": output_path,
-        "export_size": 4,  # 每个分片 4GB
+        "export_size": 4,
         "export_legacy_format": False,
     }
 
@@ -347,12 +707,14 @@ def merge_lora_weights(cfg: dict, adapter_path: str, output_path: str, logger: l
         logger.error(f"  合并失败:\n{result.stderr}")
         raise RuntimeError("LoRA 权重合并失败")
 
-    logger.info(f"  [v] 合并完成，保存至: {output_path}")
+    logger.info(f"  合并完成，保存至: {output_path}")
 
 
 # ─── 评估 ────────────────────────────────────────────────────
 def run_evaluation(cfg: dict, model_path: str, logger: logging.Logger) -> dict:
-    logger.info("【模型评估】")
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【模型评估】")
+    logger.info(f"{'─'*60}")
 
     eval_tasks = cfg.get("evaluation", {}).get("tasks", [])
     if not eval_tasks:
@@ -384,16 +746,15 @@ def run_evaluation(cfg: dict, model_path: str, logger: logging.Logger) -> dict:
         )
 
         if result.returncode == 0:
-            # 尝试解析评估结果
             results_file = os.path.join(model_path, "eval_results", task, "results.json")
             if os.path.exists(results_file):
                 with open(results_file) as f:
                     results[task] = json.load(f)
-                logger.info(f"  [v] {task}: {results[task]}")
+                logger.info(f"  {task}: {results[task]}")
             else:
-                logger.warning(f"  [!] {task} 结果文件不存在")
+                logger.warning(f"  {task} 结果文件不存在")
         else:
-            logger.warning(f"  [!] {task} 评估失败: {result.stderr[:200]}")
+            logger.warning(f"  {task} 评估失败: {result.stderr[:200]}")
 
     return results
 
@@ -410,7 +771,9 @@ def save_run_report(
     success: bool,
     logger: logging.Logger
 ):
-    logger.info("【保存训练报告】")
+    logger.info(f"{'─'*60}")
+    logger.info(f"  【保存训练报告】")
+    logger.info(f"{'─'*60}")
 
     duration = time.time() - start_time
     hours, rem = divmod(int(duration), 3600)
@@ -433,13 +796,12 @@ def save_run_report(
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
-    # 同时生成人类可读的摘要
     summary_path = os.path.join(output_dir, "run_summary.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(f"{'='*60}\n")
         f.write(f"训练运行摘要: {run_name}\n")
         f.write(f"{'='*60}\n")
-        f.write(f"状态:     {'[v] 成功' if success else '[x] 失败'}\n")
+        f.write(f"状态:     {'成功' if success else '失败'}\n")
         f.write(f"时间:     {report['timestamp']}\n")
         f.write(f"耗时:     {report['duration']}\n")
         f.write(f"模型:     {cfg['model']['name_or_path']}\n")
@@ -456,41 +818,53 @@ def save_run_report(
         f.write(f"\n输出目录: {output_dir}\n")
         f.write(f"{'='*60}\n")
 
-    logger.info(f"  [v] 报告已保存: {report_path}")
-    logger.info(f"  [v] 摘要已保存: {summary_path}")
+    logger.info(f"  报告已保存: {report_path}")
+    logger.info(f"  摘要已保存: {summary_path}")
 
 
 # ─── 主流程 ────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="LLaMA Factory 大厂标准微调脚本")
-    parser.add_argument("--config", type=str, required=True, help="训练配置文件路径 (yaml/json)")
+    parser.add_argument("--config", type=str, default="config/train_config.yaml", help="训练配置文件路径 (yaml/json)，默认: config/train_config.yaml")
     parser.add_argument("--run_name", type=str, default=None, help="运行名称（默认自动生成）")
     parser.add_argument("--skip_merge", action="store_true", help="跳过 LoRA 权重合并")
     parser.add_argument("--skip_eval", action="store_true", help="跳过模型评估")
     parser.add_argument("--dry_run", action="store_true", help="仅验证配置，不实际训练")
     args = parser.parse_args()
 
-    # 运行名称
-    if args.run_name:
-        run_name = args.run_name
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_name = f"run_{timestamp}"
-
     # 加载配置
     cfg = load_config(args.config)
 
-    # 输出目录
+    # 运行名称：命令行指定 > 复用已有 run 目录 > 新建（基础名 + 日期时分）
     base_output = cfg.get("output", {}).get("base_dir", "outputs")
+    if args.run_name:
+        run_name = args.run_name
+    else:
+        base_name = generate_run_name(cfg)
+        existing = sorted(
+            glob.glob(os.path.join(base_output, f"{base_name}_*")),
+            key=os.path.getmtime, reverse=True
+        )
+        if existing and os.path.isdir(existing[0]):
+            run_name = os.path.basename(existing[0])
+        else:
+            timestamp = datetime.now().strftime("%m%d_%H%M")
+            run_name = f"{base_name}_{timestamp}"
+
+    # 输出目录
     output_dir = os.path.join(base_output, run_name)
     log_dir = os.path.join(output_dir, "logs")
     os.makedirs(output_dir, exist_ok=True)
 
     # 日志
-    logger = setup_logger(log_dir, run_name)
-    logger.info(f"[>] 开始训练任务: {run_name}")
-    logger.info(f"   配置文件: {args.config}")
-    logger.info(f"   输出目录: {output_dir}")
+    logger = setup_logger(log_dir)
+
+    logger.info(f"{'='*60}")
+    logger.info(f"  Step 2 — 微调训练")
+    logger.info(f"{'='*60}")
+    logger.info(f"  运行名称 : {run_name}")
+    logger.info(f"  配置文件 : {args.config}")
+    logger.info(f"  输出目录 : {output_dir}")
 
     # 备份配置
     shutil.copy2(args.config, os.path.join(output_dir, "config_backup.yaml"))
@@ -505,10 +879,13 @@ def main():
         # 1. 环境检查
         env_info = check_environment(logger)
 
-        # 2. 数据验证
+        # 2. 模型检查与下载
+        model_path = ensure_model_available(cfg, logger)
+
+        # 3. 数据验证
         data_path = os.path.join(
             cfg["data"].get("dataset_dir", "data"),
-            cfg["data"]["dataset_name"] + ".jsonl"
+            f"{cfg['data']['dataset_name']}_train.jsonl"
         )
         if os.path.exists(data_path):
             data_stats = validate_dataset(data_path, logger)
@@ -516,45 +893,62 @@ def main():
             logger.warning(f"  数据文件 {data_path} 不存在，跳过验证（将由 LLaMA Factory 内部处理）")
 
         if args.dry_run:
-            logger.info("【Dry Run 模式】验证通过，跳过实际训练")
+            logger.info(f"{'─'*60}")
+            logger.info(f"  Dry Run 模式 — 验证通过，跳过实际训练")
+            logger.info(f"{'─'*60}")
             success = True
             return
 
-        # 3. 生成训练配置
+        # 4. 生成训练配置
         lf_config_path = generate_llamafactory_config(cfg, run_name, output_dir)
-        logger.info(f"  [v] LLaMA Factory 配置已生成: {lf_config_path}")
+        logger.info(f"  LLaMA Factory 配置已生成: {lf_config_path}")
 
-        # 4. 执行训练
+        # 5. 执行训练
         process = run_training(lf_config_path, logger)
         if process.returncode != 0:
             raise RuntimeError(f"训练进程退出码: {process.returncode}")
-        logger.info("  [v] 训练完成")
+        logger.info("  训练完成")
 
-        # 5. 合并 LoRA 权重
+        # 6. 合并 LoRA 权重
+        # 检测是否为预量化模型（Unsloth 等），预量化模型无法合并
+        model_name = cfg["model"].get("name_or_path", "")
+        is_preqantized = (
+            "unsloth" in model_name.lower() or
+            "-bnb-" in model_name.lower() or
+            "-awq" in model_name.lower() or
+            "-gptq" in model_name.lower()
+        )
+
         if not args.skip_merge and cfg["training"].get("finetuning_type") in ("lora", "qlora"):
-            best_ckpt = find_best_checkpoint(output_dir, logger)
-            merged_path = os.path.join(output_dir, "merged_model")
-            merge_lora_weights(cfg, best_ckpt, merged_path, logger)
-            eval_model_path = merged_path
+            if is_preqantized:
+                logger.info(f"{'─'*60}")
+                logger.info(f"  【跳过合并】检测到预量化模型: {model_name}")
+                logger.info(f"  预量化模型的 LoRA 权重无法合并，将直接使用 checkpoint")
+                logger.info(f"{'─'*60}")
+                eval_model_path = output_dir
+            else:
+                best_ckpt = find_best_checkpoint(output_dir, logger, lf_config_path)
+                merged_path = os.path.join(output_dir, "merged_model")
+                merge_lora_weights(cfg, best_ckpt, merged_path, logger)
+                eval_model_path = merged_path
         else:
             eval_model_path = output_dir
 
-        # 6. 模型评估
+        # 7. 模型评估
         if not args.skip_eval:
             eval_results = run_evaluation(cfg, eval_model_path, logger)
 
         success = True
-        logger.info(f"\n{'='*60}")
-        logger.info(f"[v] 训练任务 [{run_name}] 完成！")
+        logger.info(f"{'='*60}")
+        logger.info(f"  训练完成: {run_name}")
         logger.info(f"{'='*60}")
 
     except Exception as e:
-        logger.error(f"\n{'='*60}")
-        logger.error(f"[x] 训练任务失败: {e}", exc_info=True)
+        logger.error(f"{'='*60}")
+        logger.error(f"  训练失败: {e}", exc_info=True)
         logger.error(f"{'='*60}")
 
     finally:
-        # 7. 保存报告
         save_run_report(
             run_name, cfg, env_info,
             data_stats, eval_results, output_dir,

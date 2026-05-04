@@ -1,0 +1,31 @@
+# =============================================================
+#  模型部署 & HTTP 测试配置
+#  用于 step4_test_http.py
+# =============================================================
+
+# ─── 部署配置 ──────────────────────────────────────────────────
+serving:
+  framework: "vllm"                    # vllm | sglang | ollama
+  host: "127.0.0.1"
+  port: 8000
+  gpu_memory_utilization: 0.9          # GPU 显存利用率（vllm / sglang）
+  max_model_len: 2048                  # 最大序列长度（vllm / sglang）
+  served_model_name: "qwen3-intent"    # 模型服务名称（API 调用时的 model 参数）
+  extra_args: ""                       # 透传给框架的额外启动参数
+
+# ─── 客户端配置 ────────────────────────────────────────────────
+client:
+  mode: "openai"                       # openai | requests
+  timeout: 30                          # 单次请求超时（秒）
+  max_retries: 3                       # 请求失败重试次数
+  workers: 1                           # 并发线程数（1=顺序）
+
+# ─── 测试配置 ──────────────────────────────────────────────────
+test:
+  max_new_tokens: 100                  # 最大生成 token 数
+  temperature: 0.1                     # 采样温度
+  enable_thinking: false               # 启用 Qwen3 思考链
+  extract_code: true                   # 从输出提取意图编码（false 时直接比对原始输出）
+  log_request_body: true               # 日志打印完整请求体
+  log_response_body: true              # 日志打印完整返回报文
+  max_samples: null                    # 限制测试条数，null=全部

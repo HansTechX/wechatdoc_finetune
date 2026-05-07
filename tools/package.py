@@ -41,16 +41,11 @@ def main():
     parser.add_argument(
         "--remote-path",
         type=str,
-        required=False,
-        help="远程目标目录路径（推送时必填）",
+        default="/mnt/wechat_finetune",
+        help="远程目标目录路径（默认: /mnt/wechat_finetune）",
     )
 
     args = parser.parse_args()
-
-    # 推送模式必须指定远程路径
-    if args.push and not args.remote_path:
-        print("错误: 使用 --push 时必须指定 --remote-path")
-        sys.exit(1)
 
     script_dir = Path(__file__).parent.resolve()
     project_root = script_dir.parent
@@ -130,11 +125,13 @@ def main():
             sys.exit(1)
         print("✓ 上传成功")
 
-        # 远程执行：清空目录（保留压缩包）和解压
+        # 远程执行：创建目录（如不存在）、清空目录（保留压缩包）和解压
         remote_package_path = f"{args.remote_path}/{package_name}"
-        print("正在远程解压...")
+        print("正在远程操作...")
 
         remote_commands = [
+            # 创建目录（如不存在）
+            f"mkdir -p {args.remote_path}",
             # 进入目标目录
             f"cd {args.remote_path}",
             # 清空当前目录下的所有文件和文件夹（除了刚上传的压缩包）

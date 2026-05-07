@@ -331,11 +331,14 @@ python tools/serve.py start --idle-timeout 60
 # 仅本地打包（生成 wechatdoc_finetune_<timestamp>.tar.gz）
 python tools/package.py
 
-# 打包并推送到远程服务器（使用默认 SSH 别名）
-python tools/package.py --push --remote-path /mnt/data/projects/
+# 打包并推送到远程服务器（使用默认配置）
+python tools/package.py --push
 
-# 指定 SSH 别名和远程路径
-python tools/package.py --push --remote ali-pai-dsw --remote-path /data/path
+# 推送时跳过确认（自动化场景）
+python tools/package.py --push --yes
+
+# 指定远程路径
+python tools/package.py --push --remote-path /custom/path
 ```
 
 **参数说明：**
@@ -344,18 +347,20 @@ python tools/package.py --push --remote ali-pai-dsw --remote-path /data/path
 |------|--------|------|
 | `--push` | 无 | 启用推送模式 |
 | `--remote` | `ali-pai-dsw` | SSH 别名或远程主机地址 |
-| `--remote-path` | 无 | 远程目标目录路径（推送时必填） |
+| `--remote-path` | `/mnt/wechatdoc_finetune` | 远程目标目录路径 |
+| `--yes`, `-y` | 无 | 跳过所有确认提示 |
 
 **功能特点：**
 - 使用 `git archive` 生成遵循 .gitignore 的部署包
 - 检查未提交更改并提示确认
-- 推送模式自动化部署流程：上传 → 清空目录 → 解压
+- 推送模式自动化部署流程
 
 **推送流程：**
-1. 上传压缩包到远程目录
-2. 清空远程目录所有文件（除了压缩包本身）
-3. 解压压缩包到目标目录
-4. 删除压缩包
+1. 创建远程目录（如不存在）
+2. 上传压缩包到远程目录
+3. 清空远程目录所有文件（除了压缩包本身）
+4. 解压压缩包到目标目录
+5. 删除压缩包
 
 ---
 

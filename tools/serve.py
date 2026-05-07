@@ -28,7 +28,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_ROOT)
 
-from tools.step3_test import find_latest_merged_model
+from step3_test import find_latest_merged_model
 
 # PID 文件路径（用于 stop / status 操作）
 PID_FILE = "/tmp/model_serve.pid"

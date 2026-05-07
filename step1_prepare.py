@@ -181,6 +181,12 @@ def build_code_map(rows: list, prompt: str) -> tuple:
 
 
 def convert_to_jsonl(rows: list, system_prompt: str, code_map: dict, lower_map: dict, use_mapping: bool = True) -> tuple:
+    if not rows:
+        raise ValueError("数据为空，无法转换。请检查 Excel sheet 是否存在且有数据。")
+
+    if len(rows) < 2:
+        raise ValueError(f"数据行数不足（当前: {len(rows)}），需要至少包含表头和一行数据。")
+
     header = [str(c).strip() if c else "" for c in rows[0]]
     col_input = header.index("客户问题")
     col_output = header.index("人工标注结果")
@@ -470,6 +476,25 @@ def main():
     logger.info(f"  日志文件 : {log_path}")
 
     sheets = read_excel(excel_path)
+
+    # 显示可用的 sheet
+    logger.info(f"{'─'*60}")
+    logger.info(f"  Excel Sheet 列表")
+    logger.info(f"{'─'*60}")
+    for sheet_name, sheet_data in sheets.items():
+        logger.info(f"    {sheet_name}: {len(sheet_data)} 行")
+    logger.info(f"{'─'*60}")
+
+    # 检查必需的 sheet 是否存在
+    required_sheets = ["主意图-训练集", "主意图-测试集"]
+    missing_sheets = [s for s in required_sheets if s not in sheets or not sheets[s]]
+    if missing_sheets:
+        logger.error(f"  [!] 缺少或为空的 sheet: {', '.join(missing_sheets)}")
+        logger.error(f"  请检查 Excel 文件是否包含以下 sheet:")
+        for s in required_sheets:
+            logger.error(f"    - {s}")
+        logger.error(f"  当前可用的 sheet: {', '.join(sheets.keys())}")
+        sys.exit(1)
 
     # 提示词
     logger.info(f"{'─'*60}")

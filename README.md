@@ -120,8 +120,21 @@ python step1_prepare.py --output_dir data
 **自动完成：**
 - 从"提示词" sheet 提取系统提示词
 - 从"业务编码映射" sheet 构建意图编码映射
+- 从"主意图-训练集" sheet 生成训练数据
+- 从"主意图-测试集" sheet 生成验证数据
 - 生成 `mainintent_train.jsonl` 和 `mainintent_val.jsonl`
 - 注册数据集到 `data/dataset_info.json`
+
+**Excel 文件格式要求：**
+数据文件需包含以下 sheet：
+- `提示词` - 系统提示词配置
+- `业务编码映射` - 意图编码与名称的映射关系
+- `主意图-训练集` - 训练数据
+- `主意图-测试集` - 验证数据
+- `子意图-训练集` - 子意图训练数据（可选）
+- `子意图-测试集` - 子意图验证数据（可选）
+- `参数提取-训练集` - 参数提取训练数据（可选）
+- `参数提取-测试集` - 参数提取验证数据（可选）
 
 ---
 
@@ -278,6 +291,12 @@ python tools/serve.py start --no_wait
 
 # 显示更多测试用例
 python tools/serve.py start --val_samples 5
+
+# 启用空闲自动停止（30分钟无推理请求后自动停止，释放显卡资源）
+python tools/serve.py start --idle-timeout 30
+
+# 启用1小时空闲自动停止
+python tools/serve.py start --idle-timeout 60
 ```
 
 **参数说明：**
@@ -291,6 +310,7 @@ python tools/serve.py start --val_samples 5
 | `--timeout` | `300` | 等待服务就绪的超时秒数 |
 | `--no_wait` | `false` | 启动后不等待服务就绪 |
 | `--val_samples` | `3` | 显示的验证集测试用例数量 |
+| `--idle-timeout` | `0` | 空闲自动停止时间（分钟），0 表示不启用 |
 
 **功能特点：**
 - 支持 vLLM / SGLang / Ollama 三种部署框架
@@ -298,6 +318,44 @@ python tools/serve.py start --val_samples 5
 - PID 管理，支持 stop/restart 操作
 - 服务状态查询（PID、框架、健康检查）
 - 日志保存到 `<model_path>/logs/server.log`
+- **空闲自动停止**：检测实际推理请求（`POST /v1/chat/completions`），忽略健康检查等请求，超时自动释放显卡资源
+
+---
+
+### 📦 tools/package.py — 项目打包与部署
+
+打包项目并可选推送到远程服务器。
+
+**用法：**
+```bash
+# 仅本地打包（生成 wechatdoc_finetune_<timestamp>.tar.gz）
+python tools/package.py
+
+# 打包并推送到远程服务器（使用默认 SSH 别名）
+python tools/package.py --push --remote-path /mnt/data/projects/
+
+# 指定 SSH 别名和远程路径
+python tools/package.py --push --remote ali-pai-dsw --remote-path /data/path
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--push` | 无 | 启用推送模式 |
+| `--remote` | `ali-pai-dsw` | SSH 别名或远程主机地址 |
+| `--remote-path` | 无 | 远程目标目录路径（推送时必填） |
+
+**功能特点：**
+- 使用 `git archive` 生成遵循 .gitignore 的部署包
+- 检查未提交更改并提示确认
+- 推送模式自动化部署流程：上传 → 清空目录 → 解压
+
+**推送流程：**
+1. 上传压缩包到远程目录
+2. 清空远程目录所有文件（除了压缩包本身）
+3. 解压压缩包到目标目录
+4. 删除压缩包
 
 ---
 
@@ -655,6 +713,69 @@ tar -czf result.tar.gz merged_model/ inference_results_*.json
 # 通过 DSW 界面下载或使用
 # dsw upload result.tar.gz
 ```
+
+### 6. DSW 重启后要做的配置
+
+DSW 实例重启后需要重新配置环境和 SSH 连接。
+
+#### 6.1 安装 LLaMA-Factory
+
+```bash
+cd LLaMA-Factory
+pip install -e ".[torch,metrics]" --no-build-isolation
+```
+
+#### 6.2 安装 Excel 依赖
+
+```bash
+pip install openpyxl
+```
+
+#### 6.3 启用 SSH 远程连接
+
+**步骤一：添加本机公钥**
+
+```bash
+# 1. 在本机生成 SSH 密钥对（如果还没有）
+ssh-keygen -t ed25519 -C "your_email@example.com"
+
+# 2. 在本机查看公钥内容
+cat ~/.ssh/id_ed25519.pub
+
+# 3. 在 DSW 中添加公钥（替换下面为你的实际公钥内容）
+echo "ssh-ed25519 AAAA... your_email@example.com" >> ~/.ssh/authorized_keys
+```
+
+**步骤二：配置并重启 SSH 服务**
+
+```bash
+# 启用公钥认证
+sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+# 配置公钥文件路径
+sed -i 's/#AuthorizedKeysFile     .ssh\/authorized_keys .ssh\/authorized_keys2/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
+
+# 验证配置
+cat /etc/ssh/sshd_config | grep -E "PubkeyAuthentication|AuthorizedKeysFile|PermitRootLogin"
+
+# 重启 SSH 服务
+service ssh restart
+```
+
+**步骤三：配置本机 SSH 别名（可选）**
+
+在本机 `~/.ssh/config` 中添加：
+
+```
+Host ali-pai-dsw
+    HostName <DSW实例IP或域名>
+    User root
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking no
+```
+
+配置后可以直接使用 `ssh ali-pai-dsw` 连接。
 
 ---
 

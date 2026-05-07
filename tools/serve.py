@@ -22,6 +22,8 @@ import tempfile
 import urllib.request
 import urllib.error
 import random
+import threading
+import logging
 
 # 获取项目根目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +35,18 @@ from step3_test import find_latest_merged_model
 # PID 文件路径（用于 stop / status 操作）
 PID_FILE = "/tmp/model_serve.pid"
 META_FILE = "/tmp/model_serve.meta.json"  # 保存 base_url、framework 等元信息
+LAST_ACTIVITY_FILE = "/tmp/model_serve.last_activity"  # 最后活动时间戳
+
+# 日志配置
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("serve")
+
+# 全局变量：控制监控线程
+_stop_monitor = threading.Event()
 
 
 # ─── 配置加载 ──────────────────────────────────────────────────
@@ -115,10 +129,93 @@ def build_ollama_modelfile(model_path: str, model_name: str) -> str:
 
 # ─── 服务生命周期 ──────────────────────────────────────────────
 
-def start_server(model_path: str, cfg: dict, log_dir: str = "logs") -> tuple:
+def idle_monitor_thread(log_path: str, idle_timeout_minutes: int, check_interval: int = 60):
+    """
+    空闲监控线程 - 定期检查服务端日志文件中的实际推理请求
+    只检测 /v1/chat/completions 的 POST 请求，忽略健康检查等其他请求
+    如果超过 idle_timeout_minutes 没有实际推理请求，自动停止服务
+
+    Args:
+        log_path: 服务端日志文件路径
+        idle_timeout_minutes: 空闲超时时间（分钟）
+        check_interval: 检查间隔（秒），默认 60 秒
+    """
+    idle_timeout_seconds = idle_timeout_minutes * 60
+    logger.info(f"[空闲监控] 已启动 - 超时: {idle_timeout_minutes}分钟 | 监控: /v1/chat/completions 请求")
+
+    # 记录上次检测到的推理请求位置（文件字节偏移）
+    last_position = 0
+    if os.path.exists(log_path):
+        last_position = os.path.getsize(log_path)
+
+    last_request_time = time.time()
+
+    while not _stop_monitor.is_set():
+        try:
+            if not os.path.exists(log_path):
+                logger.warning(f"[空闲监控] 日志文件不存在: {log_path}")
+                break
+
+            current_size = os.path.getsize(log_path)
+
+            # 日志被轮转或清空
+            if current_size < last_position:
+                last_position = 0
+                last_request_time = time.time()
+
+            # 读取新增的日志内容
+            new_content = ""
+            if current_size > last_position:
+                with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                    f.seek(last_position)
+                    new_content = f.read()
+                last_position = current_size
+
+            # 检测是否包含实际的推理请求（POST /v1/chat/completions）
+            # 排除健康检查请求（GET /v1/models, /health 等）
+            has_inference_request = False
+            if new_content:
+                # 检测 POST /v1/chat/completions 请求
+                if "POST" in new_content and "/v1/chat/completions" in new_content:
+                    has_inference_request = True
+
+            if has_inference_request:
+                last_request_time = time.time()
+                logger.info(f"[空闲监控] 检测到推理请求，重置空闲计时")
+
+            # 检查是否超时
+            current_time = time.time()
+            idle_seconds = current_time - last_request_time
+
+            if idle_seconds >= idle_timeout_seconds:
+                idle_minutes = idle_seconds / 60
+                logger.warning(f"[空闲监控] 服务已 {idle_minutes:.1f} 分钟无推理请求，自动停止服务")
+                stop_server()
+                break
+            else:
+                # 每隔一段时间打印状态
+                if int(idle_seconds) % 300 == 0:  # 每5分钟打印一次
+                    remaining_minutes = (idle_timeout_seconds - idle_seconds) / 60
+                    logger.info(f"[空闲监控] 空闲中: {idle_seconds/60:.1f}分钟 / {idle_timeout_minutes}分钟，剩余 {remaining_minutes:.1f} 分钟后自动停止")
+
+        except Exception as e:
+            logger.error(f"[空闲监控] 检查异常: {e}")
+
+        # 等待下次检查或被停止信号唤醒
+        _stop_monitor.wait(check_interval)
+
+    logger.info("[空闲监控] 监控线程已退出")
+
+def start_server(model_path: str, cfg: dict, log_dir: str = "logs", idle_timeout: int = 0) -> tuple:
     """
     启动模型服务，写入 PID 文件和元信息文件。
     返回 (pid, base_url)，失败返回 (None, "")。
+
+    Args:
+        model_path: 模型路径
+        cfg: 部署配置
+        log_dir: 日志目录
+        idle_timeout: 空闲超时时间（分钟），0 表示不启用自动停止
     """
     framework = cfg.get("serving", {}).get("framework", "vllm")
     host = cfg.get("serving", {}).get("host", "127.0.0.1")
@@ -189,6 +286,18 @@ def start_server(model_path: str, cfg: dict, log_dir: str = "logs") -> tuple:
 
     print(f"  PID       : {proc.pid}  (已写入 {PID_FILE})")
     print(f"  服务地址  : {base_url}")
+
+    # 启动空闲监控线程（如果启用）
+    if idle_timeout > 0:
+        monitor_thread = threading.Thread(
+            target=idle_monitor_thread,
+            args=(server_log_path, idle_timeout),
+            daemon=True,
+            name="IdleMonitor",
+        )
+        monitor_thread.start()
+        print(f"  空闲监控  : 已启用 ({idle_timeout}分钟无请求自动停止)")
+
     return proc.pid, base_url
 
 
@@ -414,6 +523,14 @@ def main():
         "--val_samples", type=int, default=3,
         help="显示的验证集测试用例数量（默认 3）",
     )
+    parser.add_argument(
+        "--idle-timeout", type=int, default=0,
+        help=(
+            "空闲自动停止时间（分钟）。"
+            "服务在指定时间内无新请求时自动停止，释放显卡资源。"
+            "0 表示不启用（默认）。"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -454,7 +571,7 @@ def main():
             run_dir = os.path.dirname(run_dir)
         log_dir = os.path.join(run_dir, "logs")
 
-    pid, base_url = start_server(model_path, serve_cfg, log_dir=log_dir)
+    pid, base_url = start_server(model_path, serve_cfg, log_dir=log_dir, idle_timeout=args.idle_timeout)
     if pid is None:
         print("[!] 服务启动失败")
         sys.exit(1)

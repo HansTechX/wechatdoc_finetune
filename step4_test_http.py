@@ -448,13 +448,13 @@ def run_http_inference(
             }
             body_str = json.dumps(request_body, ensure_ascii=False, indent=4)
 
-            # 使用 print 输出，不带日志前缀
-            print(f"# 实例 {i+1}: {case['input'][:40]}{'...' if len(case['input']) > 40 else ''}")
-            print(f'curl -X POST "{base_url}/v1/chat/completions" \\')
-            print('  -H "Content-Type: application/json" \\')
-            print('  -H "Authorization: Bearer test" \\')
-            print(f"  -d '{body_str}'")
-            print("")
+            # 输出到日志
+            logger.info(f"# 实例 {i+1}: {case['input'][:40]}{'...' if len(case['input']) > 40 else ''}")
+            logger.info(f'curl -X POST "{base_url}/v1/chat/completions" \\')
+            logger.info('  -H "Content-Type: application/json" \\')
+            logger.info('  -H "Authorization: Bearer test" \\')
+            logger.info(f"  -d '{body_str}'")
+            logger.info("")
 
         logger.info(f"{'='*60}")
         logger.info("")

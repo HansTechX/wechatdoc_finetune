@@ -500,7 +500,7 @@ def main():
 
     # 训练集
     train_data, train_skip, train_unmapped, train_dist = convert_to_jsonl(
-        sheets.get("训练集", []), system_prompt, code_map, lower_map, use_mapping
+        sheets.get("主意图-训练集", []), system_prompt, code_map, lower_map, use_mapping
     )
     train_file = f"{args.dataset_name}_train.jsonl"
     train_path = os.path.join(args.output_dir, train_file)
@@ -510,7 +510,7 @@ def main():
 
     # 测试集（训练完成后用于推理测试，不参与训练）
     val_data, val_skip, val_unmapped, val_dist = convert_to_jsonl(
-        sheets.get("测试集", []), system_prompt, code_map, lower_map, use_mapping
+        sheets.get("主意图-测试集", []), system_prompt, code_map, lower_map, use_mapping
     )
     val_file = f"{args.dataset_name}_val.jsonl"
     val_path = os.path.join(args.output_dir, val_file)

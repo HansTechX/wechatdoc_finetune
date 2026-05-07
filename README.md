@@ -543,7 +543,7 @@ model:
 ├── tools/                      # 辅助工具脚本
 │   ├── serve.py                # 模型服务管理（vLLM/SGLang/Ollama）
 │   ├── train_webui.py          # WebUI 可视化训练（调试模式）
-│   └── package.sh              # 部署打包脚本
+│   └── package.py              # 部署打包脚本
 ├── data/                       # 数据集目录
 │   ├── dataset_info.json
 │   ├── mainintent_train.jsonl

@@ -13,8 +13,10 @@ def run_cmd(cmd: list[str], capture: bool = True) -> subprocess.CompletedProcess
     return subprocess.run(cmd, capture_output=capture, text=True)
 
 
-def confirm_action(message: str) -> bool:
+def confirm_action(message: str, skip_confirm: bool = False) -> bool:
     """确认操作"""
+    if skip_confirm:
+        return True
     while True:
         reply = input(f"{message} (y/N) ").strip().lower()
         if reply == "y":
@@ -41,8 +43,13 @@ def main():
     parser.add_argument(
         "--remote-path",
         type=str,
-        default="/mnt/wechat_finetune",
-        help="远程目标目录路径（默认: /mnt/wechat_finetune）",
+        default="/mnt/wechatdoc_finetune",
+        help="远程目标目录路径（默认: /mnt/wechatdoc_finetune）",
+    )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="跳过所有确认提示",
     )
 
     args = parser.parse_args()
@@ -75,7 +82,7 @@ def main():
         print("警告: 存在未提交的更改")
         print("建议先提交更改，或按 Ctrl+C 取消")
         print()
-        if not confirm_action("是否继续打包?"):
+        if not confirm_action("是否继续打包?", args.yes):
             print("已取消")
             sys.exit(1)
 
@@ -110,9 +117,17 @@ def main():
         print(f"  2. 上传并解压 {package_name} 到该目录")
         print()
 
-        if not confirm_action("确认执行推送操作?"):
+        if not confirm_action("确认执行推送操作?", args.yes):
             print("已取消推送")
             sys.exit(0)
+
+        # 先创建远程目录
+        print("正在创建远程目录...")
+        result = run_cmd(["ssh", args.remote, f"mkdir -p {args.remote_path}"], capture=False)
+        if result.returncode != 0:
+            print("✗ 创建目录失败")
+            sys.exit(1)
+        print("✓ 目录已创建")
 
         # 上传文件
         print("正在上传文件...")
@@ -125,13 +140,11 @@ def main():
             sys.exit(1)
         print("✓ 上传成功")
 
-        # 远程执行：创建目录（如不存在）、清空目录（保留压缩包）和解压
+        # 远程执行：清空目录（保留压缩包）和解压
         remote_package_path = f"{args.remote_path}/{package_name}"
         print("正在远程操作...")
 
         remote_commands = [
-            # 创建目录（如不存在）
-            f"mkdir -p {args.remote_path}",
             # 进入目标目录
             f"cd {args.remote_path}",
             # 清空当前目录下的所有文件和文件夹（除了刚上传的压缩包）

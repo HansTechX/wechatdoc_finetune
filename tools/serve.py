@@ -321,15 +321,18 @@ def print_curl_examples(base_url: str, model_name: str, val_path: str, count: in
     if not samples:
         print(f"  [!] 未找到验证集文件: {val_path}")
         print(f"\n通用测试用例:")
-        print(f"""  curl -X POST "{base_url}/v1/chat/completions" \\
-    -H "Content-Type: application/json" \\
-    -H "Authorization: Bearer test" \\
-    -d '{{
-      "model": "{model_name}",
-      "messages": [{{"role":"user","content":"测试"}}],
-      "temperature": 0.1,
-      "max_tokens": 100
-    }}'""")
+        # 构建通用测试用例的请求体
+        request_body = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "测试"}],
+            "temperature": 0.1,
+            "max_tokens": 100
+        }
+        body_str = json.dumps(request_body, ensure_ascii=False, indent=4)
+        print(f"""curl -X POST "{base_url}/v1/chat/completions" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer test" \\
+  -d '{body_str}'""")
         return
 
     for i, sample in enumerate(samples, 1):
@@ -337,33 +340,30 @@ def print_curl_examples(base_url: str, model_name: str, val_path: str, count: in
         expected_output = sample.get("output", "")
 
         # 构造用户消息
-        # 对于意图分类任务，通常将 instruction 放在 system 角色
         instruction = sample.get("instruction", "")
+        messages_json = []
         if instruction:
             # 截断过长的 instruction
-            if len(instruction) > 500:
-                instruction = instruction[:500] + "..."
-            messages = [
-                f'{{"role":"system","content":"{instruction[:200]}..."}}',
-                f'{{"role":"user","content":"{user_input}"}}'
-            ]
-        else:
-            messages = [f'{{"role":"user","content":"{user_input}"}}']
+            sys_content = instruction[:500] + "..." if len(instruction) > 500 else instruction
+            messages_json.append({"role": "system", "content": sys_content})
+        messages_json.append({"role": "user", "content": user_input})
 
-        messages_str = ",".join(messages)
+        # 构建完整的请求体
+        request_body = {
+            "model": model_name,
+            "messages": messages_json,
+            "temperature": 0.1,
+            "max_tokens": 50
+        }
+        body_str = json.dumps(request_body, ensure_ascii=False, indent=4)
 
         print(f"# 实例 {i}: {user_input[:40]}{'...' if len(user_input) > 40 else ''}")
         if expected_output:
             print(f"# 期望输出: {expected_output}")
-        print(f"""curl -X POST "{base_url}/v1/chat/completions" \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer test" \\
-  -d '{{
-    "model": "{model_name}",
-    "messages": [{messages_str}],
-    "temperature": 0.1,
-    "max_tokens": 50
-  }}'""")
+        print(f'curl -X POST "{base_url}/v1/chat/completions" \\')
+        print('  -H "Content-Type: application/json" \\')
+        print('  -H "Authorization: Bearer test" \\')
+        print(f"  -d '{body_str}'")
 
         if i < count:
             print("")

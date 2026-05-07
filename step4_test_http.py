@@ -425,24 +425,36 @@ def run_http_inference(
         # 生成 3 条 curl 实例
         for i in range(min(3, len(test_cases))):
             case = test_cases[i]
-            msg_list = []
-            if system_prompt:
-                sys_content = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
-                msg_list.append(f'{{"role":"system","content":"{sys_content}"}}')
-            msg_list.append(f'{{"role":"user","content":"{case["input"]}"}}')
-            messages_str = ",".join(msg_list)
 
-            logger.info(f"# 实例 {i+1}: {case['input'][:40]}{'...' if len(case['input']) > 40 else ''}")
-            logger.info(f"curl -X POST \"{base_url}/v1/chat/completions\" \\")
-            logger.info(f"  -H \"Content-Type: application/json\" \\")
-            logger.info(f"  -H \"Authorization: Bearer test\" \\")
-            logger.info(f"  -d '{{'")
-            logger.info(f"    \"model\": \"{model_name}\",")
-            logger.info(f"    \"messages\": [{messages_str}],")
-            logger.info(f"    \"temperature\": {temperature},")
-            logger.info(f"    \"max_tokens\": {max_new_tokens}")
-            logger.info(f"  }}'")
-            logger.info("")
+            # 构建 messages 数组（JSON 格式）
+            messages_json = []
+            if system_prompt:
+                sys_content = system_prompt
+                messages_json.append({
+                    "role": "system",
+                    "content": sys_content
+                })
+            messages_json.append({
+                "role": "user",
+                "content": case["input"]
+            })
+
+            # 构建完整的请求体
+            request_body = {
+                "model": model_name,
+                "messages": messages_json,
+                "temperature": temperature,
+                "max_tokens": max_new_tokens
+            }
+            body_str = json.dumps(request_body, ensure_ascii=False, indent=4)
+
+            # 使用 print 输出，不带日志前缀
+            print(f"# 实例 {i+1}: {case['input'][:40]}{'...' if len(case['input']) > 40 else ''}")
+            print(f'curl -X POST "{base_url}/v1/chat/completions" \\')
+            print('  -H "Content-Type: application/json" \\')
+            print('  -H "Authorization: Bearer test" \\')
+            print(f"  -d '{body_str}'")
+            print("")
 
         logger.info(f"{'='*60}")
         logger.info("")

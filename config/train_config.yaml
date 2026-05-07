@@ -12,9 +12,9 @@ run:
 model:
   # name_or_path: "Qwen/Qwen3-8B"   # Qwen/Qwen3-8B
   # name_or_path: "Qwen/Qwen3-4B"  # Qwen/Qwen3-4B
-  name_or_path: "unsloth/Qwen3-4B-unsloth-bnb-4bit"  # unsloth/Qwen3-4B-unsloth-bnb-4bit
-  # name_or_path: "Qwen/Qwen3-1.7B"  # Qwen/Qwen3-1.7B
+  name_or_path: "Qwen/Qwen3-1.7B"  # Qwen/Qwen3-1.7B
   #name_or_path: "Qwen/Qwen3.5-9B"  # Qwen3.5  底层依赖不支持新版模型
+  # name_or_path: "unsloth/Qwen3-4B-unsloth-bnb-4bit"  # unsloth/Qwen3-4B-unsloth-bnb-4bit  底层依赖不支持量化模型
   trust_remote_code: true
 
 # ─── 数据配置 ─────────────────────────────────────────────────

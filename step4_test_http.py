@@ -415,6 +415,35 @@ def run_http_inference(
         logger.info(f"  messages 结构:")
         logger.info(f"  {json.dumps({'messages': messages, 'temperature': temperature, 'max_tokens': max_new_tokens, 'extra_body': {'chat_template_kwargs': {'enable_thinking': enable_thinking}}}, ensure_ascii=False, indent=2)}")
         logger.info("")
+
+        # ── 打印 curl 实例 ──
+        logger.info(f"{'='*60}")
+        logger.info(f"  【curl 实例】可直接复制执行测试")
+        logger.info(f"{'='*60}")
+        logger.info("")
+
+        # 生成 3 条 curl 实例
+        for i in range(min(3, len(test_cases))):
+            case = test_cases[i]
+            msg_list = []
+            if system_prompt:
+                sys_content = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
+                msg_list.append(f'{{"role":"system","content":"{sys_content}"}}')
+            msg_list.append(f'{{"role":"user","content":"{case["input"]}"}}')
+            messages_str = ",".join(msg_list)
+
+            logger.info(f"# 实例 {i+1}: {case['input'][:40]}{'...' if len(case['input']) > 40 else ''}")
+            logger.info(f"curl -X POST \"{base_url}/v1/chat/completions\" \\")
+            logger.info(f"  -H \"Content-Type: application/json\" \\")
+            logger.info(f"  -H \"Authorization: Bearer test\" \\")
+            logger.info(f"  -d '{{'")
+            logger.info(f"    \"model\": \"{model_name}\",")
+            logger.info(f"    \"messages\": [{messages_str}],")
+            logger.info(f"    \"temperature\": {temperature},")
+            logger.info(f"    \"max_tokens\": {max_new_tokens}")
+            logger.info(f"  }}'")
+            logger.info("")
+
         logger.info(f"{'='*60}")
         logger.info("")
 

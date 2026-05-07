@@ -4,7 +4,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 PACKAGE_NAME="wechatdoc_finetune_${TIMESTAMP}.tar.gz"
@@ -12,7 +13,7 @@ PACKAGE_NAME="wechatdoc_finetune_${TIMESTAMP}.tar.gz"
 echo "============================================================"
 echo "  项目打包脚本"
 echo "============================================================"
-echo "工作目录: $SCRIPT_DIR"
+echo "项目根目录: $PROJECT_ROOT"
 echo "输出文件: $PACKAGE_NAME"
 echo ""
 

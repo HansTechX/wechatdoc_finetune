@@ -259,22 +259,22 @@ python step4_test_http.py --workers 4
 **用法：**
 ```bash
 # 启动服务（自动匹配最新模型）
-python serve.py start
+python tools/serve.py start
 
 # 指定模型路径
-python serve.py start --model_path outputs/run_*/merged_model
+python tools/serve.py start --model_path outputs/run_*/merged_model
 
 # 停止服务
-python serve.py stop
+python tools/serve.py stop
 
 # 查看服务状态
-python serve.py status
+python tools/serve.py status
 
 # 重启服务
-python serve.py restart
+python tools/serve.py restart
 
 # 启动后不等待就绪
-python serve.py start --no_wait
+python tools/serve.py start --no_wait
 ```
 
 **参数说明：**
@@ -482,10 +482,10 @@ quantization:
 
 ### Q: 如何在 DSW 中启动 HTTP 服务？
 
-使用 `serve.py` 或 `step4_test_http.py`：
+使用 `tools/serve.py` 或 `step4_test_http.py`：
 ```bash
 # 启动服务（DSW 中需要设置 --host 0.0.0.0 才能外部访问）
-python serve.py start
+python tools/serve.py start
 
 # 或使用 step4 测试
 python step4_test_http.py
@@ -524,16 +524,16 @@ model:
 ├── step2_train.py              # 模型训练
 ├── step3_test.py               # 本地推理测试
 ├── step4_test_http.py          # HTTP API 测试
-├── serve.py                    # 模型服务管理
 ├── run_pipeline.py             # 一键流水线
 ├── run_pipeline_batch.py       # 批量训练
 ├── config/
 │   ├── train_config.yaml       # 训练配置
 │   └── serve_config.yaml       # 部署配置
 ├── tools/                      # 辅助工具脚本
+│   ├── serve.py                # 模型服务管理
 │   ├── check_dsw_env.sh        # DSW 环境查询 (Bash)
 │   ├── check_dsw_env.py        # DSW 环境查询 (Python)
-│   ├── train_webui.py          # WebUI 可视化训练（调试用）
+│   ├── train_webui.py          # WebUI 可视化训练（调试模式）
 │   └── package.sh              # 部署打包脚本
 ├── data/                       # 数据集目录
 │   ├── dataset_info.json
@@ -558,7 +558,44 @@ model:
 
 ### 调试模式
 适用于开发阶段的可视化调试：
-- `tools/train_webui.py`：可视化训练，方便参数实验
+
+**tools/train_webui.py** — WebUI 可视化训练
+
+基于 LLaMA Factory 官方 WebUI 的可视化操作界面，适合参数实验和快速验证。
+
+**用法：**
+```bash
+# 默认端口 7860
+python tools/train_webui.py
+
+# 指定端口
+python tools/train_webui.py --port 8080
+```
+
+**参数说明：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--port` | `7860` | WebUI 服务端口 |
+
+**功能特点：**
+- **可视化配置**：在浏览器界面中配置模型、数据集、训练参数
+- **全流程支持**：训练、推理、模型合并、导出
+- **实时监控**：训练过程可视化，损失曲线实时展示
+- **日志记录**：自动保存日志到 `outputs/webui_<timestamp>/logs/`
+
+**访问地址：**
+- 本地访问：`http://127.0.0.1:7860`
+- DSW 访问：`http://0.0.0.0:7860`（需配置端口映射）
+
+**与生产模式的区别：**
+
+| 特性 | 调试模式（WebUI） | 生产模式（CLI） |
+|------|------------------|-----------------|
+| 参数配置 | 浏览器界面 | 配置文件 + 命令行参数 |
+| 自动化程度 | 手动操作 | 完全自动化 |
+| 批量训练 | 不支持 | 支持 |
+| 适用场景 | 参数实验、快速验证 | 生产部署、批量训练 |
 
 ---
 

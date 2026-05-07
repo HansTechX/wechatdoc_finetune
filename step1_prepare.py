@@ -15,6 +15,11 @@ from collections import defaultdict
 from datetime import datetime
 
 try:
+    import yaml
+except ImportError:
+    yaml = None
+
+try:
     import openpyxl
 except ImportError:
     raise ImportError("需要 openpyxl，请运行: pip install openpyxl")
@@ -286,6 +291,137 @@ def update_train_config(dataset_name: str):
         logger.warning(f"未在 train_config.yaml 中找到 dataset_name 字段")
 
 
+def analyze_sequence_length(jsonl_path: str, logger, config_path: str):
+    """
+    分析训练数据的序列长度，给出 max_seq_length 配置建议
+
+    Args:
+        jsonl_path: 训练数据文件路径
+        logger: 日志记录器
+        config_path: 配置文件路径
+    """
+    # 读取当前配置
+    current_max_seq = None
+    if yaml is not None:
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+                # max_seq_length 在 data 部分下
+                data_config = config.get("data", {})
+                current_max_seq = data_config.get("max_seq_length", None)
+        except Exception as e:
+            logger.warning(f"无法读取配置文件: {e}")
+    else:
+        logger.warning(f"未安装 yaml 库，跳过配置检查")
+
+    # 读取并分析样本
+    samples = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            data = json.loads(line.strip())
+            instruction = data.get("instruction", "")
+            input_text = data.get("input", "")
+            output = data.get("output", "")
+
+            # 估算 token 数量（Qwen 对中文效率较高，约 1.2 字符 = 1 token）
+            def estimate_tokens(text):
+                return max(1, int(len(text) * 0.8)) if text else 0
+
+            input_tokens = estimate_tokens(instruction) + estimate_tokens(input_text)
+            total_tokens = input_tokens + estimate_tokens(output)
+
+            samples.append({
+                "input_tokens": input_tokens,
+                "total_tokens": total_tokens,
+            })
+
+    if not samples:
+        logger.warning("  无法分析序列长度：无有效样本")
+        return
+
+    # 统计
+    total_lengths = [s["total_tokens"] for s in samples]
+    total_lengths.sort()
+
+    n = len(total_lengths)
+    stats = {
+        "min": total_lengths[0],
+        "max": total_lengths[-1],
+        "mean": sum(total_lengths) / n,
+        "median": total_lengths[n // 2],
+        "p95": total_lengths[int(n * 0.95)],
+        "p99": total_lengths[int(n * 0.99)],
+    }
+
+    # 推荐值（向上取整到常见的序列长度）
+    def recommend_length(value):
+        for threshold in [512, 1024, 2048, 4096, 8192, 16384]:
+            if value <= threshold:
+                return threshold
+        return 16384
+
+    recommended = recommend_length(stats["p99"])
+
+    # 打印统计信息
+    logger.info(f"  样本数量: {n:,}")
+    logger.info(f"  系统提示词长度: {samples[0]['input_tokens']} tokens (估算)")
+    logger.info(f"  {'─'*60}")
+    logger.info(f"  总长度 (instruction + input + output):")
+    logger.info(f"    最小值: {stats['min']:,} tokens")
+    logger.info(f"    最大值: {stats['max']:,} tokens")
+    logger.info(f"    平均值: {stats['mean']:,.1f} tokens")
+    logger.info(f"    中位数: {stats['median']:,} tokens")
+    logger.info(f"    P95:    {stats['p95']:,} tokens (95%样本)")
+    logger.info(f"    P99:    {stats['p99']:,} tokens (99%样本)")
+
+    # 截断分析
+    logger.info(f"  {'─'*60}")
+    logger.info(f"  截断风险分析:")
+
+    for max_len in [512, 1024, 2048, 4096, 8192]:
+        truncated = sum(1 for length in total_lengths if length > max_len)
+        percentage = truncated / n * 100
+
+        if truncated == 0:
+            status = "✓ 无截断"
+        elif percentage > 95:
+            status = f"✗ {truncated} 条被截断 ({percentage:.1f}%) - 严重截断！"
+        elif percentage > 50:
+            status = f"✗ {truncated} 条被截断 ({percentage:.1f}%) - 大量截断"
+        elif percentage > 10:
+            status = f"⚠ {truncated} 条被截断 ({percentage:.1f}%) - 部分截断"
+        else:
+            status = f"⚠ {truncated} 条被截断 ({percentage:.1f}%)"
+
+        current_mark = " ← 当前配置" if current_max_seq == max_len else ""
+        logger.info(f"    max_seq_length = {max_len:5d} : {status}{current_mark}")
+
+    # 配置建议
+    logger.info(f"  {'─'*60}")
+    logger.info(f"  配置建议:")
+
+    if current_max_seq is None:
+        logger.warning(f"    ⚠ 未找到 max_seq_length 配置")
+        logger.warning(f"    建议在 {config_path} 中设置:")
+        logger.warning(f"      max_seq_length: {recommended}")
+    elif current_max_seq < stats["p95"]:
+        logger.warning(f"    ⚠ 当前配置 ({current_max_seq}) 小于 P95 ({stats['p95']})")
+        logger.warning(f"    {sum(1 for x in total_lengths if x > current_max_seq) / n * 100:.1f}% 的样本将被截断！")
+        logger.warning(f"    建议修改为: max_seq_length: {recommended}")
+        logger.warning(f"    截断会导致模型学不到完整的指令，准确率大幅下降！")
+    elif current_max_seq < recommended:
+        logger.info(f"    ✓ 当前配置 ({current_max_seq}) 基本合适")
+        logger.info(f"    但建议考虑提升到: {recommended} (更安全)")
+    else:
+        logger.info(f"    ✓ 当前配置 ({current_max_seq}) 完全合适")
+
+    logger.info(f"  {'─'*60}")
+    logger.info(f"  说明:")
+    logger.info(f"    - Token 数量为估算值 (Qwen tokenizer 效率)")
+    logger.info(f"    - 实际训练时建议使用比 P99 更大的值以提供安全余量")
+    logger.info(f"    - 配置位置: {config_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="从 Excel 生成微调训练数据")
     parser.add_argument("--input", nargs="?", default=None, help="Excel 文件路径 (默认选最新)")
@@ -388,6 +524,12 @@ def main():
     logger.info(f"{'─'*60}")
     update_dataset_info(args.dataset_name, train_file, args.output_dir)
     update_train_config(args.dataset_name)
+
+    # 序列长度分析
+    logger.info(f"{'─'*60}")
+    logger.info(f"  序列长度分析")
+    logger.info(f"{'─'*60}")
+    analyze_sequence_length(train_path, logger, config_path)
 
     logger.info(f"{'='*60}")
     logger.info(f"  数据准备完成")

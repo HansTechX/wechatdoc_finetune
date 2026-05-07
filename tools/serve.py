@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-模型服务管理脚本 - 仅负责启停，不执行测试
+模型服务管理脚本 - 支持启动、停止、状态查看和测试
 支持 vLLM / SGLang / Ollama 三种部署框架
 
 用法:
-  python serve.py start                        # 启动服务（自动匹配模型）
-  python serve.py start --model_path /path/to/model
-  python serve.py stop                         # 停止服务
-  python serve.py status                       # 查看服务状态
-  python serve.py restart                      # 重启服务
+  python tools/serve.py start                        # 启动服务（自动匹配模型）
+  python tools/serve.py start --model_path /path/to/model
+  python tools/serve.py stop                         # 停止服务
+  python tools/serve.py status                       # 查看服务状态
+  python tools/serve.py restart                      # 重启服务
 """
 
 import os
@@ -21,8 +21,14 @@ import subprocess
 import tempfile
 import urllib.request
 import urllib.error
+import random
 
-from step3_test import find_latest_merged_model
+# 获取项目根目录
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
+
+from tools.step3_test import find_latest_merged_model
 
 # PID 文件路径（用于 stop / status 操作）
 PID_FILE = "/tmp/model_serve.pid"
@@ -43,6 +49,23 @@ def load_serve_config(path: str) -> dict:
         sys.exit(1)
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_val_samples(val_path: str, count: int = 5) -> list:
+    """从验证集加载样本，用于生成测试用例"""
+    if not os.path.exists(val_path):
+        return []
+
+    samples = []
+    with open(val_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                data = json.loads(line)
+                samples.append(data)
+                if len(samples) >= count:
+                    break
+
+    return samples
 
 
 # ─── 启动命令构造 ──────────────────────────────────────────────
@@ -286,6 +309,66 @@ def show_status() -> None:
         print(f"  API 就绪  : {'✓ 是' if ready else '✗ 否（进程存在但 API 未响应）'}")
 
 
+def print_curl_examples(base_url: str, model_name: str, val_path: str, count: int = 3) -> None:
+    """从验证集读取样本并打印 curl 测试用例"""
+    samples = load_val_samples(val_path, count)
+
+    print(f"\n{'='*60}")
+    print(f"【curl 实例】可直接复制执行测试（来自验证集）")
+    print(f"{'='*60}")
+    print("")
+
+    if not samples:
+        print(f"  [!] 未找到验证集文件: {val_path}")
+        print(f"\n通用测试用例:")
+        print(f"""  curl -X POST "{base_url}/v1/chat/completions" \\
+    -H "Content-Type: application/json" \\
+    -H "Authorization: Bearer test" \\
+    -d '{{
+      "model": "{model_name}",
+      "messages": [{{"role":"user","content":"测试"}}],
+      "temperature": 0.1,
+      "max_tokens": 100
+    }}'""")
+        return
+
+    for i, sample in enumerate(samples, 1):
+        user_input = sample.get("input", "")
+        expected_output = sample.get("output", "")
+
+        # 构造用户消息
+        # 对于意图分类任务，通常将 instruction 放在 system 角色
+        instruction = sample.get("instruction", "")
+        if instruction:
+            # 截断过长的 instruction
+            if len(instruction) > 500:
+                instruction = instruction[:500] + "..."
+            messages = [
+                f'{{"role":"system","content":"{instruction[:200]}..."}}',
+                f'{{"role":"user","content":"{user_input}"}}'
+            ]
+        else:
+            messages = [f'{{"role":"user","content":"{user_input}"}}']
+
+        messages_str = ",".join(messages)
+
+        print(f"# 实例 {i}: {user_input[:40]}{'...' if len(user_input) > 40 else ''}")
+        if expected_output:
+            print(f"# 期望输出: {expected_output}")
+        print(f"""curl -X POST "{base_url}/v1/chat/completions" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer test" \\
+  -d '{{
+    "model": "{model_name}",
+    "messages": [{messages_str}],
+    "temperature": 0.1,
+    "max_tokens": 50
+  }}'""")
+
+        if i < count:
+            print("")
+
+
 # ─── 主入口 ────────────────────────────────────────────────────
 
 def main():
@@ -305,7 +388,7 @@ def main():
     )
     parser.add_argument(
         "--config", type=str, default="config/train_config.yaml",
-        help="训练配置文件路径（用于自动匹配模型目录）",
+        help="训练配置文件路径（用于自动匹配模型目录和数据集）",
     )
     parser.add_argument(
         "--serve_config", type=str, default="config/serve_config.yaml",
@@ -327,8 +410,15 @@ def main():
         "--no_wait", action="store_true",
         help="启动后不等待服务就绪，直接返回",
     )
+    parser.add_argument(
+        "--val_samples", type=int, default=3,
+        help="显示的验证集测试用例数量（默认 3）",
+    )
 
     args = parser.parse_args()
+
+    # 切换到项目根目录
+    os.chdir(PROJECT_ROOT)
 
     # ── stop / status 不需要加载模型配置 ──
     if args.action == "stop":
@@ -371,29 +461,34 @@ def main():
 
     if args.no_wait:
         print("\n[--no_wait] 跳过就绪等待，服务在后台启动中")
-        print(f"可使用以下命令查看状态:\n  python serve.py status")
+        print(f"可使用以下命令查看状态:\n  python tools/serve.py status")
         return
 
     if not wait_for_server(base_url, timeout=args.timeout, framework=framework):
         print("[!] 服务就绪超时，请检查日志:", log_dir)
         sys.exit(1)
 
-    # 打印使用提示
+    # 获取验证集路径（从 train_config.yaml 读取数据集配置）
+    val_path = None
+    try:
+        import yaml
+        with open(args.config, "r", encoding="utf-8") as f:
+            train_cfg = yaml.safe_load(f)
+            dataset_name = train_cfg.get("data", {}).get("dataset_name", "mainintent")
+            dataset_dir = train_cfg.get("data", {}).get("dataset_dir", "data")
+            val_path = os.path.join(dataset_dir, f"{dataset_name}_val.jsonl")
+    except Exception as e:
+        print(f"[!] 无法读取数据集配置: {e}")
+        val_path = "data/mainintent_val.jsonl"  # 默认路径
+
+    # 打印测试用例
     model_name = serve_cfg.get("serving", {}).get("served_model_name", "qwen3-intent")
+    print_curl_examples(base_url, model_name, val_path, args.val_samples)
+
+    # 打印其他提示
     print(f"\n{'='*60}")
-    print(f"服务已就绪，可使用以下 curl 验证:")
-    print(f"{'='*60}")
-    print(f"""  curl -X POST "{base_url}/v1/chat/completions" \\
-    -H "Content-Type: application/json" \\
-    -H "Authorization: Bearer test" \\
-    -d '{{
-      "model": "{model_name}",
-      "messages": [{{"role":"user","content":"测试"}}],
-      "temperature": 0.1,
-      "max_tokens": 100
-    }}'""")
-    print(f"\n停止服务:\n  python serve.py stop")
-    print(f"查看状态:\n  python serve.py status")
+    print(f"停止服务:\n  python tools/serve.py stop")
+    print(f"查看状态:\n  python tools/serve.py status")
 
 
 if __name__ == "__main__":

@@ -252,9 +252,9 @@ python step4_test_http.py --workers 4
 
 ---
 
-### 🔧 serve.py — 模型服务管理
+### 🔧 tools/serve.py — 模型服务管理
 
-独立的模型服务启停脚本，仅负责服务生命周期管理。
+独立的模型服务启停脚本，支持 vLLM / SGLang / Ollama 三种部署框架。
 
 **用法：**
 ```bash
@@ -275,6 +275,9 @@ python tools/serve.py restart
 
 # 启动后不等待就绪
 python tools/serve.py start --no_wait
+
+# 显示更多测试用例
+python tools/serve.py start --val_samples 5
 ```
 
 **参数说明：**
@@ -287,6 +290,14 @@ python tools/serve.py start --no_wait
 | `--model_path` | 自动选最新 | 合并模型路径 |
 | `--timeout` | `300` | 等待服务就绪的超时秒数 |
 | `--no_wait` | `false` | 启动后不等待服务就绪 |
+| `--val_samples` | `3` | 显示的验证集测试用例数量 |
+
+**功能特点：**
+- 支持 vLLM / SGLang / Ollama 三种部署框架
+- 启动后自动显示 curl 测试用例（来自验证集）
+- PID 管理，支持 stop/restart 操作
+- 服务状态查询（PID、框架、健康检查）
+- 日志保存到 `<model_path>/logs/server.log`
 
 ---
 
@@ -530,9 +541,7 @@ model:
 │   ├── train_config.yaml       # 训练配置
 │   └── serve_config.yaml       # 部署配置
 ├── tools/                      # 辅助工具脚本
-│   ├── serve.py                # 模型服务管理
-│   ├── check_dsw_env.sh        # DSW 环境查询 (Bash)
-│   ├── check_dsw_env.py        # DSW 环境查询 (Python)
+│   ├── serve.py                # 模型服务管理（vLLM/SGLang/Ollama）
 │   ├── train_webui.py          # WebUI 可视化训练（调试模式）
 │   └── package.sh              # 部署打包脚本
 ├── data/                       # 数据集目录
